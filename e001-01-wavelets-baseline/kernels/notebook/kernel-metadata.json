@@ -1,0 +1,19 @@
+{
+  "id": "bplukasz/e001-01-wavelets-baseline-notebook",
+  "title": "e001-01-wavelets-baseline-notebook",
+  "code_file": "runner.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "bplukasz/e001-01-wavelets-baseline-lib",
+    "bplukasz/shared-lib",
+    "jessicali9530/celeba-dataset"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
+

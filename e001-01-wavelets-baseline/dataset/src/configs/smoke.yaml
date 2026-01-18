@@ -1,0 +1,19 @@
+# Profil: smoke
+# Smoke test - szybka weryfikacja czy wszystko działa
+
+name: "smoke"
+
+# === TRAINING ===
+steps: 500
+batch_size: 32
+
+# === LOGGING ===
+log_every: 1
+grid_every: 100
+ckpt_every: 250
+eval_every: 250
+live: false
+use_wandb: true
+
+# === EVALUATION ===
+fid_samples: 2048

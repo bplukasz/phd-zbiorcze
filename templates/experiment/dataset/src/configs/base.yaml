@@ -1,0 +1,21 @@
+# Bazowa konfiguracja dla eksperymentu
+# Te wartości są wspólne dla wszystkich profili i mogą być nadpisane w profilach
+
+# === TRAINING ===
+steps: 5000
+batch_size: 64
+lr: 0.001
+
+# === LOGGING ===
+log_every: 10
+viz_every: 100
+ckpt_every: 1000
+live: false
+use_wandb: true
+
+# === PATHS ===
+out_dir: "/kaggle/working/artifacts"
+data_dir: "/kaggle/input/your-dataset"
+
+# === CUSTOM ===
+# Dodaj tutaj swoje parametry specyficzne dla eksperymentu

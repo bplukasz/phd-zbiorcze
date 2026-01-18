@@ -1,0 +1,5 @@
+torch
+torchvision
+pyyaml
+matplotlib
+# Dodaj inne zależności specyficzne dla eksperymentu

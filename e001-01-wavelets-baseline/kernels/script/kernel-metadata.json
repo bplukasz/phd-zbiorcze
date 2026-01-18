@@ -1,0 +1,19 @@
+{
+  "id": "bplukasz/e001-01-wavelets-baseline-script",
+  "title": "e001-01-wavelets-baseline-script",
+  "code_file": "run.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "bplukasz/e001-01-wavelets-baseline-lib",
+    "bplukasz/shared-lib",
+    "jessicali9530/celeba-dataset"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
+

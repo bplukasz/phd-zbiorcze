@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Kaggle
+kaggle.json
+
+# Testowe eksperymenty (opcjonalnie - odkomentuj jeśli nie chcesz commitować testów)
+# e999-*/
+# e000-*/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+

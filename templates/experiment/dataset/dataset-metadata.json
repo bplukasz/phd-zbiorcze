@@ -1,0 +1,10 @@
+{
+  "title": "{{FULL_NAME}}-lib",
+  "id": "{{KAGGLE_USERNAME}}/{{FULL_NAME}}-lib",
+  "licenses": [
+    {
+      "name": "CC0-1.0"
+    }
+  ]
+}
+

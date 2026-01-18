@@ -1,0 +1,19 @@
+# Profil: preview
+# Szybki podgląd dla notebooków (live mode, krótki trening)
+
+name: "preview"
+
+# === TRAINING ===
+steps: 200
+batch_size: 16
+
+# === LOGGING ===
+log_every: 10
+grid_every: 50
+ckpt_every: 100
+eval_every: 100
+live: true
+use_wandb: false
+
+# === EVALUATION ===
+fid_samples: 1000

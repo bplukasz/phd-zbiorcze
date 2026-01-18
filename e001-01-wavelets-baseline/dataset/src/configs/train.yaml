@@ -1,0 +1,20 @@
+# Profil: train
+# Pełny trening produkcyjny
+
+name: "train"
+
+# === TRAINING ===
+steps: 30000
+batch_size: 64
+
+# === LOGGING ===
+log_every: 1
+grid_every: 1000
+ckpt_every: 5000
+eval_every: 10000
+live: false
+use_wandb: true
+
+# === EVALUATION ===
+eval_samples: 50000
+fid_samples: 10000
