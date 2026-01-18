@@ -73,7 +73,20 @@ steps: 100
 model_dim: 128  # mniejszy model dla preview
 ```
 
-### 4. Użyj w kodzie
+### 4. [Dla skryptu] Ustaw profil w run.py
+
+W `kernels/script/run.py` ustaw profil i opcjonalne overrides:
+
+```python
+PROFILE = "train"  # lub "preview", "smoke"
+
+OVERRIDES = {
+    # 'steps': 10000,
+    # 'batch_size': 128,
+}
+```
+
+### 5. Użyj w kodzie
 
 W `experiment.py` konfiguracja jest już zintegrowana:
 
@@ -101,27 +114,31 @@ model, losses = train("preview")
 ```
 
 ### CLI Script
-```bash
-# Użyj profilu
-python run.py --profile train
+```python
+# W run.py ustaw profil i opcjonalne overrides:
 
-# Z nadpisaniami
-python run.py --profile train --steps 10000 --batch-size 128 --no-wandb
+PROFILE = "train"  # lub "preview", "smoke"
+
+OVERRIDES = {
+    'steps': 10000,
+    'batch_size': 128,
+}
+
+# Kaggle uruchomi automatycznie
 ```
 
-### Z kodem
+### Kaggle Script
 ```python
-from src import get_config, train
+# W run.py edytuj stałe na górze:
 
-# Z nadpisaniami
-cfg = get_config("train", overrides={
+PROFILE = "train"  # wybierz profil
+
+OVERRIDES = {
     "steps": 10000,
     "lr": 0.0001,
-    "model_dim": 512
-})
+}
 
-# Lub bezpośrednio w train
-model, losses = train("train", overrides={"steps": 10000})
+# Kaggle uruchomi automatycznie, bez parametrów CLI
 ```
 
 ## 🎯 Hierarchia konfiguracji

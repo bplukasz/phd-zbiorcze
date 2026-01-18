@@ -7,7 +7,6 @@ ResNet GAN z hinge loss, SpectralNorm, EMA, DiffAugment na CelebA 128x128
 import os
 import sys
 import subprocess
-import argparse
 
 # ============================================================================
 # Auto-instalacja zależności
@@ -61,73 +60,44 @@ if os.path.exists(CELEBA_DIR):
     print(f"CelebA contents: {os.listdir(CELEBA_DIR)}")
 
 # ============================================================================
+# Configuration
+# ============================================================================
+
+# Wybierz profil treningu:
+# - "preview": 200 kroków, szybki test
+# - "smoke": 500 kroków, weryfikacja pipeline
+# - "train": pełny trening (30k kroków)
+PROFILE = "smoke"
+
+# Opcjonalne nadpisania konfiguracji (ustaw None żeby nie nadpisywać):
+OVERRIDES = {
+    # 'steps': 10000,
+    # 'batch_size': 128,
+    # 'use_wandb': False,
+    # 'eval_every': 5000,
+}
+
+# ============================================================================
 # Import and run
 # ============================================================================
 
 from src import train, get_config
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="ResNet GAN baseline training on CelebA 128x128"
-    )
-    parser.add_argument(
-        "--profile",
-        type=str,
-        default="smoke",
-        choices=["preview", "train", "smoke"],
-        help="Training profile: preview (200 steps), smoke (500 steps), train (30k steps)"
-    )
-    parser.add_argument(
-        "--steps",
-        type=int,
-        default=None,
-        help="Override number of training steps"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        help="Override batch size"
-    )
-    parser.add_argument(
-        "--no-wandb",
-        action="store_true",
-        help="Disable Weights & Biases logging"
-    )
-    parser.add_argument(
-        "--eval-every",
-        type=int,
-        default=None,
-        help="Override FID/KID evaluation interval"
-    )
-
-    args = parser.parse_args()
-
-    # Prepare overrides from CLI arguments
-    overrides = {}
-    if args.steps is not None:
-        overrides['steps'] = args.steps
-    if args.batch_size is not None:
-        overrides['batch_size'] = args.batch_size
-    if args.no_wandb:
-        overrides['use_wandb'] = False
-    if args.eval_every is not None:
-        overrides['eval_every'] = args.eval_every
-
-    # Get config with overrides
-    cfg = get_config(args.profile, overrides)
+if __name__ == "__main__":
+    # Display config
+    cfg = get_config(PROFILE, OVERRIDES)
 
     print(f"\nKonfiguracja:")
     print(f"  Profile: {cfg.name}")
     print(f"  Steps: {cfg.steps}")
     print(f"  Batch size: {cfg.batch_size}")
-    print(f"  LR: {cfg.lr_G}")
+    print(f"  LR_G: {cfg.lr_G}")
     print(f"  W&B: {cfg.use_wandb}")
     print(f"  Eval every: {cfg.eval_every}")
     print()
 
     # Run training
-    model, losses = train(args.profile, overrides)
+    model, losses = train(PROFILE, OVERRIDES)
 
     print("\n" + "=" * 60)
     print("Training completed!")
@@ -136,6 +106,4 @@ def main():
     print("=" * 60)
 
 
-if __name__ == "__main__":
-    main()
 

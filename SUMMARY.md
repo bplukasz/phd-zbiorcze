@@ -93,11 +93,13 @@ from src import train
 train("preview")  # 200 kroków, live mode
 ```
 
-**CLI:**
-```bash
-python run.py --profile train
-python run.py --profile smoke --steps 1000 --no-wandb
+**Kaggle Script:**
+W `run.py` ustaw:
+```python
+PROFILE = "train"  # lub "preview", "smoke"
+OVERRIDES = {}     # opcjonalnie
 ```
+Kaggle uruchomi automatycznie.
 
 ## ⭐ Kluczowe funkcje
 
@@ -115,9 +117,11 @@ base.yaml → profile.yaml → CLI overrides
 ### Automatyczne zapisywanie
 Każdy trening zapisuje `{out_dir}/config_used.yaml` dla reproducibility
 
-### CLI support
-```bash
-python run.py --profile train --steps 10000 --batch-size 128
+### ✅ Obsługa konfiguracji
+```python
+# W run.py:
+PROFILE = "train"
+OVERRIDES = {'steps': 10000}
 ```
 
 ## ✅ Testy przeszły
