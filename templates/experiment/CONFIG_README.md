@@ -229,7 +229,31 @@ To pozwala dokładnie odtworzyć warunki eksperymentu.
 ✅ **Hierarchiczne** - elastyczny system priorytetów
 ✅ **Reproducible** - automatyczne zapisywanie konfiguracji
 ✅ **Skalowalne** - łatwo dodawać nowe parametry i profile
-✅ **CLI-friendly** - pełna obsługa argumentów
+✅ **CLI-friendly** - pełna obsługa przez stałe w run.py
+
+## 🔧 Weights & Biases (W&B)
+
+System automatycznie obsługuje W&B logging:
+
+### Włączanie/wyłączanie
+```yaml
+# W configs/base.yaml lub profile:
+use_wandb: true   # włącz
+use_wandb: false  # wyłącz
+```
+
+### Bezpieczna obsługa
+- Jeśli brak API key na Kaggle, system automatycznie wyłączy W&B i kontynuuje trening
+- Nie wymaga ręcznej konfiguracji
+- Loguje automatycznie: loss, config, step
+
+### Użycie z API key
+Jeśli masz API key, dodaj w notebooku Kaggle:
+```python
+import wandb
+wandb.login(key="your_api_key")
+```
+Lub dodaj jako Kaggle Secret.
 
 ## 📖 Dokumentacja
 

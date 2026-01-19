@@ -1,5 +1,6 @@
 torch
 torchvision
 pyyaml
+wandb
 matplotlib
 # Dodaj inne zależności specyficzne dla eksperymentu

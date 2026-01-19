@@ -31,11 +31,12 @@ print(f"CODE_DIR exists: {os.path.exists(CODE_DIR)}")
 # - "train": pełny trening (5k kroków)
 PROFILE = "train"
 
-# Opcjonalne nadpisania konfiguracji (ustaw None żeby nie nadpisywać):
+# Opcjonalne nadpisania konfiguracji:
+# UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, wyłącz:
 OVERRIDES = {
+    # 'use_wandb': False,  # Wyłącz W&B jeśli brak API key
     # 'steps': 10000,
     # 'batch_size': 128,
-    # 'use_wandb': False,
 }
 
 # ============================================================================

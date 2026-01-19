@@ -2,6 +2,26 @@
 
 ResNet GAN baseline z hinge loss, SpectralNorm, EMA, DiffAugment na CelebA 128x128.
 
+## 🔧 WAŻNE - Aktualizacja po pierwszym runie (2026-01-18)
+
+**Problem:** FID wzrósł (419→425), mode collapse na kroku 224, brak feedbacku o postępie
+
+**Status:** ✅ NAPRAWIONO
+
+**Kluczowe zmiany:**
+- ✅ lr_D zmniejszone: 0.0002 → 0.0001
+- ✅ R1 gradient penalty dodany (stabilizacja)
+- ✅ Progress tracking dla długich operacji
+- ✅ Real-time monitoring FID i mode collapse
+- ✅ Częstsza ewaluacja (100 zamiast 250 kroków)
+
+**📖 Przeczytaj:**
+- **`QUICK_FIX.md`** - szybki start z poprawkami
+- **`ANALIZA_WYNIKOW.md`** - szczegółowa analiza problemu
+- **`TO_NAPRAWIENIE.md`** - pełna dokumentacja zmian
+
+---
+
 ## Opis eksperymentu
 
 - **Dataset**: CelebA 128×128 (faces)
@@ -10,8 +30,9 @@ ResNet GAN baseline z hinge loss, SpectralNorm, EMA, DiffAugment na CelebA 128x1
 - **Regularizacja**: 
   - SpectralNorm w Discriminatorze
   - DiffAugment (color, translation, cutout)
+  - **R1 Gradient Penalty** (NOWE - włączone w train profile)
 - **EMA**: decay 0.999 dla stabilizacji generatora
-- **Optimizer**: Adam (lr=2e-4, betas=(0.0, 0.99))
+- **Optimizer**: Adam (lr_G=2e-4, lr_D=1e-4, betas=(0.0, 0.99))
 
 ## System konfiguracji
 
@@ -148,9 +169,26 @@ pyyaml
 matplotlib
 ```
 
+## 📚 Dokumentacja Poprawek v1.1.0
+
+### Szybki start:
+- **[INDEX.md](INDEX.md)** - przewodnik po całej dokumentacji
+- **[QUICK_FIX.md](QUICK_FIX.md)** - 2-minutowe podsumowanie (START TUTAJ!)
+- **[CHANGELOG.md](CHANGELOG.md)** - lista zmian wersja po wersji
+
+### Szczegółowa analiza:
+- **[ANALIZA_WYNIKOW.md](ANALIZA_WYNIKOW.md)** - techniczne wyjaśnienie problemu (15 min)
+- **[VISUALIZATION.md](VISUALIZATION.md)** - wykresy przed/po (5 min)
+- **[TO_NAPRAWIENIE.md](TO_NAPRAWIENIE.md)** - pełna dokumentacja zmian (20 min)
+
+### Operacyjne:
+- **[CHECKLIST.md](CHECKLIST.md)** - procedura przed i podczas treningu
+- **[compare_configs.py](compare_configs.py)** - narzędzie do porównania parametrów
+
 ## Notatki
 
 - System konfiguracji automatycznie zapisuje użytą konfigurację dla reproducibility
 - Profile dziedziczą z `base.yaml` i nadpisują tylko różnice
 - CLI overrides mają najwyższy priorytet
-- Wszystkie testy przechodzą pomyślnie
+- **v1.1.0:** Dodano R1 penalty, progress tracking, FID monitoring
+- **Target FID:** < 50 po 30k kroków (smoke test: < 300 po 500 kroków)

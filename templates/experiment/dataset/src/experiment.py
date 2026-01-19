@@ -1,6 +1,9 @@
 """
 Eksperyment: {{FULL_NAME}}
 Opis: [UZUPEŁNIJ OPIS EKSPERYMENTU]
+
+UWAGA: Ten szablon zawiera podstawową strukturę.
+       Dodaj progress tracking dla długich operacji (generowanie próbek, FID/KID).
 """
 
 import os
@@ -18,6 +21,13 @@ except Exception:
     _HAS_IPYTHON = False
 
 import matplotlib.pyplot as plt
+
+# Optional: Weights & Biases
+try:
+    import wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
 
 # Import configuration system
 from .config_loader import RunConfig, get_config
@@ -37,6 +47,11 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     Returns:
         Tuple z modelem i historią strat
+
+    UWAGA: Pamiętaj o dodaniu progress tracking dla:
+           - Generowania próbek (print co 20 batchy)
+           - Obliczania FID/KID (print przed rozpoczęciem)
+           - Detekcji mode collapse (nagłe skoki loss)
     """
     cfg = get_config(profile, overrides)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,6 +72,20 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     loader = ConfigLoader()
     loader.save_config(cfg, os.path.join(cfg.out_dir, "config_used.yaml"))
 
+    # W&B (optional)
+    if cfg.use_wandb and _HAS_WANDB:
+        try:
+            wandb.init(
+                project="{{FULL_NAME}}",
+                name=cfg.name,
+                config=cfg.to_dict(),
+            )
+            print("W&B logging enabled")
+        except Exception as e:
+            print(f"Warning: Could not initialize W&B: {e}")
+            print("Continuing without W&B logging...")
+            cfg.use_wandb = False
+
     # TODO: Zaimplementuj logikę eksperymentu
 
     t0 = time.time()
@@ -71,9 +100,17 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         if cfg.log_every > 0 and step % cfg.log_every == 0:
             print(f"[{step:06d}/{cfg.steps}] loss={losses[-1]:.4f}")
 
+            # W&B logging
+            if cfg.use_wandb and _HAS_WANDB:
+                wandb.log({"loss": losses[-1]}, step=step)
+
     print(f"=" * 60)
     print(f"Zakończono w {time.time() - t0:.2f}s")
     print(f"=" * 60)
+
+    # Cleanup W&B
+    if cfg.use_wandb and _HAS_WANDB:
+        wandb.finish()
 
     return model, losses
 

@@ -285,6 +285,43 @@ def hinge_loss_g(fake_logits: torch.Tensor) -> torch.Tensor:
     return -fake_logits.mean()
 
 
+def r1_penalty(D: nn.Module, real_imgs: torch.Tensor) -> torch.Tensor:
+    """
+    R1 gradient penalty (Mescheder et al., 2018).
+    Karze Discriminator za zbyt duże gradienty względem danych wejściowych.
+    Stabilizuje trening i zapobiega mode collapse.
+
+    Args:
+        D: Discriminator model
+        real_imgs: Prawdziwe obrazy
+
+    Returns:
+        Gradient penalty scalar
+    """
+    real_imgs = real_imgs.detach().requires_grad_(True)
+    real_logits = D(real_imgs)
+
+    # Backward przez sumę logits (nie mean, bo chcemy gradienty dla każdej próbki)
+    grad_outputs = torch.ones_like(real_logits)
+    gradients = torch.autograd.grad(
+        outputs=real_logits,
+        inputs=real_imgs,
+        grad_outputs=grad_outputs,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    # L2 norm of gradients
+    penalty = (gradients ** 2).sum([1, 2, 3]).mean()
+    return penalty
+
+
+def hinge_loss_g(fake_logits: torch.Tensor) -> torch.Tensor:
+    """Hinge loss dla Generatora."""
+    return -fake_logits.mean()
+
+
 # ============================================================================
 # Gradient Norm
 # ============================================================================
@@ -333,8 +370,15 @@ def generate_samples(G: nn.Module, n_samples: int, z_dim: int, batch_size: int,
     n_batches = math.ceil(n_samples / batch_size)
     idx = 0
 
+    print(f"    Generowanie {n_samples} próbek w {n_batches} partiach...")
+
     with torch.no_grad():
-        for _ in range(n_batches):
+        for batch_idx in range(n_batches):
+            # Progress feedback co 20 batchy lub ostatni
+            if batch_idx % 20 == 0 or batch_idx == n_batches - 1:
+                progress = (idx / n_samples) * 100
+                print(f"    -> {idx}/{n_samples} próbek ({progress:.1f}%)")
+
             z = torch.randn(min(batch_size, n_samples - idx), z_dim, device=device)
             imgs = G(z)
             imgs = (imgs + 1) / 2  # [-1, 1] -> [0, 1]
@@ -345,6 +389,7 @@ def generate_samples(G: nn.Module, n_samples: int, z_dim: int, batch_size: int,
                 save_image(img, os.path.join(out_dir, f'{idx:06d}.png'))
                 idx += 1
 
+    print(f"    ✓ Wygenerowano wszystkie {n_samples} próbek")
     G.train()
     return out_dir
 
@@ -354,6 +399,9 @@ def compute_fid_kid(real_dir: str, fake_dir: str, fid_samples: int = 10000) -> D
     try:
         from torch_fidelity import calculate_metrics
 
+        print(f"    Obliczanie FID/KID dla {fid_samples} próbek...")
+        print(f"    (To może potrwać 5-15 minut, obliczenia Inception...)")
+
         metrics = calculate_metrics(
             input1=fake_dir,
             input2=real_dir,
@@ -361,15 +409,17 @@ def compute_fid_kid(real_dir: str, fake_dir: str, fid_samples: int = 10000) -> D
             fid=True,
             kid=True,
             kid_subset_size=min(1000, fid_samples),
-            verbose=False,
+            verbose=False,  # torch-fidelity ma swój progress, ale jest spammy
         )
+
+        print(f"    ✓ Metryki obliczone!")
 
         return {
             'fid': metrics.get('frechet_inception_distance', float('nan')),
             'kid': metrics.get('kernel_inception_distance_mean', float('nan')) * 1000,  # x1000 dla czytelności
         }
     except Exception as e:
-        print(f"Błąd przy obliczaniu FID/KID: {e}")
+        print(f"    ✗ Błąd przy obliczaniu FID/KID: {e}")
         return {'fid': float('nan'), 'kid': float('nan')}
 
 
@@ -472,11 +522,17 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     # W&B
     if cfg.use_wandb and _HAS_WANDB:
-        wandb.init(
-            project="e001-wavelets-baseline",
-            name=cfg.name,
-            config=cfg.__dict__,
-        )
+        try:
+            wandb.init(
+                project="e001-wavelets-baseline",
+                name=cfg.name,
+                config=cfg.__dict__,
+            )
+            print("W&B logging enabled")
+        except Exception as e:
+            print(f"Warning: Could not initialize W&B: {e}")
+            print("Continuing without W&B logging...")
+            cfg.use_wandb = False
 
     # Fixed noise for visualization
     fixed_z = torch.randn(64, cfg.z_dim, device=device)
@@ -484,6 +540,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     # Training
     t0 = time.time()
     losses_G: List[float] = []
+    best_fid = float('inf')
+    fid_history: List[Tuple[int, float]] = []  # (step, fid)
 
     print(f"\nRozpoczynam trening: {cfg.steps} iteracji")
     print(f"Batch size: {cfg.batch_size}, LR: {cfg.lr_G}")
@@ -519,6 +577,15 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         fake_logits = D(fake_aug)
 
         loss_D = hinge_loss_d(real_logits, fake_logits)
+
+        # R1 gradient penalty (optional, costly but stabilizing)
+        if hasattr(cfg, 'use_r1_penalty') and cfg.use_r1_penalty:
+            r1_every = getattr(cfg, 'r1_every', 16)
+            if step % r1_every == 0:
+                r1_lambda = getattr(cfg, 'r1_lambda', 10.0)
+                gp = r1_penalty(D, real_imgs)
+                loss_D = loss_D + r1_lambda * gp
+
         loss_D.backward()
         grad_norm_D = compute_grad_norm(D)
         opt_D.step()
@@ -544,6 +611,13 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         vram_peak = torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else 0
 
         losses_G.append(loss_G.item())
+
+        # Detect potential mode collapse (sudden loss spikes)
+        if len(losses_G) > 10:
+            recent_avg = sum(losses_G[-10:-1]) / 9
+            if abs(loss_G.item() - recent_avg) > 5.0:
+                print(f"  ⚠️  [UWAGA krok {step}] Nagły skok w loss_G: {loss_G.item():.2f} "
+                      f"(średnia z 10: {recent_avg:.2f}). Możliwy mode collapse!")
 
         # ==================== Logging ====================
         if cfg.log_every > 0 and step % cfg.log_every == 0:
@@ -604,7 +678,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
         # ==================== Evaluation ====================
         if cfg.eval_every > 0 and step % cfg.eval_every == 0:
-            print(f"  -> Evaluation at step {step}...")
+            print(f"  -> Rozpoczynam ewaluację na kroku {step}...")
+            print(f"     (1/2) Generowanie {cfg.fid_samples} próbek testowych...")
 
             # Generate samples
             eval_samples_dir = os.path.join(samples_dir, f"step_{step:06d}")
@@ -619,8 +694,23 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
             # Compute FID/KID
             if dataloader is not None:
+                print(f"     (2/2) Obliczanie metryk FID/KID...")
                 metrics = compute_fid_kid(cfg.data_dir, eval_samples_dir, cfg.fid_samples)
-                print(f"  -> FID: {metrics['fid']:.2f}, KID: {metrics['kid']:.4f}")
+                current_fid = metrics['fid']
+                print(f"  -> FID: {current_fid:.2f}, KID: {metrics['kid']:.4f}")
+
+                # Track FID improvements/degradations
+                fid_history.append((step, current_fid))
+                if current_fid < best_fid:
+                    improvement = best_fid - current_fid
+                    best_fid = current_fid
+                    print(f"  ✓ Nowy najlepszy FID! (poprawa: {improvement:.2f})")
+                elif len(fid_history) > 1:
+                    prev_fid = fid_history[-2][1]
+                    degradation = current_fid - prev_fid
+                    print(f"  ⚠️  FID pogorszył się o {degradation:.2f} (poprzedni: {prev_fid:.2f})")
+                    if degradation > 20:
+                        print(f"  ⚠️  UWAGA: Znaczące pogorszenie! Możliwy mode collapse lub overfitting.")
 
                 if cfg.use_wandb and _HAS_WANDB:
                     wandb.log({'fid': metrics['fid'], 'kid': metrics['kid']}, step=step)
@@ -645,7 +735,12 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     # Final evaluation
     if cfg.eval_every > 0:
-        print("\nGenerowanie finalnych 50k próbek...")
+        print("\n" + "=" * 60)
+        print("FINALNA EWALUACJA")
+        print("=" * 60)
+        print(f"Generowanie finalnych {cfg.eval_samples} próbek...")
+        print(f"(To może potrwać 5-10 minut w zależności od rozmiaru)")
+
         final_samples_dir = os.path.join(samples_dir, "final_50k")
         generate_samples(
             G_ema.shadow,
@@ -655,10 +750,14 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             device=device,
             out_dir=final_samples_dir
         )
-        print(f"Zapisano {cfg.eval_samples} próbek do: {final_samples_dir}")
+        print(f"✓ Zapisano {cfg.eval_samples} próbek do: {final_samples_dir}")
 
     if cfg.use_wandb and _HAS_WANDB:
         wandb.finish()
+
+    print("\n" + "=" * 60)
+    print("🎉 EKSPERYMENT ZAKOŃCZONY POMYŚLNIE!")
+    print("=" * 60)
 
     return G_ema.shadow, losses_G
 

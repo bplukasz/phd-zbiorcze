@@ -1,11 +1,22 @@
 # Profil: train
 # Pełny trening produkcyjny
+# ZAKTUALIZOWANY po analizie smoke test (dodano stabilizatory)
 
 name: "train"
 
 # === TRAINING ===
 steps: 30000
 batch_size: 64
+
+# POPRAWKA: Zmniejszony lr_D dla lepszej stabilności
+lr_D: 0.0001  # było: 0.0002
+lr_G: 0.0002
+
+# === REGULARIZATION ===
+# R1 penalty włączony dla pełnego treningu (stabilizuje, zapobiega mode collapse)
+use_r1_penalty: true
+r1_lambda: 10.0
+r1_every: 16  # stosuj co 16 iteracji (oszczędność ~6% czasu)
 
 # === LOGGING ===
 log_every: 1

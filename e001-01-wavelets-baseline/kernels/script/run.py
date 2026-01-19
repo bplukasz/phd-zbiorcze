@@ -69,11 +69,12 @@ if os.path.exists(CELEBA_DIR):
 # - "train": pełny trening (30k kroków)
 PROFILE = "smoke"
 
-# Opcjonalne nadpisania konfiguracji (ustaw None żeby nie nadpisywać):
+# Opcjonalne nadpisania konfiguracji:
+# UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, ustaw use_wandb: False
 OVERRIDES = {
+    'use_wandb': False,  # Wyłącz W&B jeśli brak API key
     # 'steps': 10000,
     # 'batch_size': 128,
-    # 'use_wandb': False,
     # 'eval_every': 5000,
 }
 

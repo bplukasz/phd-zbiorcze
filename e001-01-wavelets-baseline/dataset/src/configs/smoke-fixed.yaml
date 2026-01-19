@@ -1,0 +1,71 @@
+# Zestaw poprawionych konfiguracji - Analiza mode collapse
+# Po analizie logów z pierwszego runu zidentyfikowano problemy:
+# 1. FID rośnie zamiast maleć (419 -> 425)
+# 2. Mode collapse na kroku 224-227
+# 3. Discriminator dominuje nad Generatorem
+
+# ============================================================================
+# POPRAWIONY smoke.yaml - do testowania poprawek
+# ============================================================================
+
+name: "smoke-fixed"
+
+# === TRAINING ===
+steps: 500
+batch_size: 32
+
+# ZMIANA #1: Zmniejszony learning rate dla D (zapobiega dominacji)
+lr_D: 0.0001  # było: 0.0002
+lr_G: 0.0002  # bez zmian
+
+# === LOGGING ===
+log_every: 1
+grid_every: 100
+ckpt_every: 250
+
+# ZMIANA #2: Częstsza ewaluacja (wcześniejsza detekcja problemów)
+eval_every: 100  # było: 250
+live: false
+use_wandb: true
+
+# === EVALUATION ===
+fid_samples: 2048
+
+# === AUGMENTACJE ===
+# ZMIANA #3: Silniejsze augmentacje (utrudnia D)
+diffaug_policy: "color,translation,cutout"  # można dodać "flip" jeśli potrzeba
+
+# ============================================================================
+# UWAGI DO IMPLEMENTACJI
+# ============================================================================
+
+# Dodatkowo rozważ w kodzie:
+#
+# 1. GRADIENT PENALTY (R1):
+#    def r1_penalty(D, real_imgs):
+#        real_imgs.requires_grad = True
+#        real_logits = D(real_imgs)
+#        grad = torch.autograd.grad(
+#            outputs=real_logits.sum(),
+#            inputs=real_imgs,
+#            create_graph=True
+#        )[0]
+#        return (grad ** 2).sum([1,2,3]).mean()
+#
+#    # W train loop:
+#    gp = r1_penalty(D, real_imgs)
+#    loss_D = loss_D + 10.0 * gp  # lambda=10
+#
+# 2. DIVERSITY LOSS dla G:
+#    diversity = -torch.pdist(fake_imgs.flatten(1)).mean()
+#    loss_G = loss_G + 0.1 * diversity
+#
+# 3. LEARNING RATE SCHEDULER:
+#    scheduler_D = CosineAnnealingLR(opt_D, T_max=steps)
+#    scheduler_G = CosineAnnealingLR(opt_G, T_max=steps)
+#
+# 4. EARLY STOPPING gdy FID rośnie:
+#    if len(fid_history) >= 2:
+#        if fid_history[-1] > fid_history[-2] + 10:
+#            print("Early stopping - FID rośnie!")
+#            break

@@ -8,6 +8,12 @@ lr_G: 0.0002
 lr_D: 0.0002
 betas: [0.0, 0.99]
 
+# === REGULARIZATION ===
+# R1 gradient penalty (stabilizuje D, zapobiega mode collapse)
+use_r1_penalty: false  # włącz w train profile
+r1_lambda: 10.0
+r1_every: 16  # stosuj co 16 iteracji (oszczędność obliczeń)
+
 # === MODEL ===
 z_dim: 128
 img_size: 128
