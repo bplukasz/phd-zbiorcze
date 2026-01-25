@@ -35,7 +35,7 @@ except ImportError:
     _HAS_WANDB = False
 
 # Import configuration system
-from .config_loader import RunConfig, get_config
+from .config_loader import get_config, ConfigLoader
 
 
 # ============================================================================
@@ -48,7 +48,8 @@ def DiffAugment(x: torch.Tensor, policy: str = '') -> torch.Tensor:
         for p in policy.split(','):
             for f in AUGMENT_FNS[p]:
                 x = f(x)
-    return x
+    # Upewnij się że wynik jest w zakresie [-1, 1]
+    return x.clamp(-1, 1)
 
 
 def rand_brightness(x: torch.Tensor) -> torch.Tensor:
@@ -142,27 +143,37 @@ class ResBlockG(nn.Module):
 
 
 class Generator(nn.Module):
-    """ResNet Generator dla 128x128."""
+    """ResNet Generator - dynamiczny rozmiar obrazu."""
 
-    def __init__(self, z_dim: int = 128, ch: int = 64, img_channels: int = 3):
+    def __init__(self, z_dim: int = 128, ch: int = 64, img_channels: int = 3, img_size: int = 128):
         super().__init__()
         self.z_dim = z_dim
         self.ch = ch
+        self.img_size = img_size
+
+        # Oblicz liczbę bloków upsampling na podstawie rozmiaru obrazu
+        # 4 -> 8 -> 16 -> 32 -> 64 -> 128 (5 bloków dla 128x128)
+        self.n_blocks = int(math.log2(img_size)) - 2
 
         # z -> 4x4 feature map
         self.fc = nn.Linear(z_dim, ch * 16 * 4 * 4)
 
-        # 4x4 -> 8x8 -> 16x16 -> 32x32 -> 64x64 -> 128x128
-        self.blocks = nn.ModuleList([
-            ResBlockG(ch * 16, ch * 16, upsample=True),  # 4 -> 8
-            ResBlockG(ch * 16, ch * 8, upsample=True),   # 8 -> 16
-            ResBlockG(ch * 8, ch * 4, upsample=True),    # 16 -> 32
-            ResBlockG(ch * 4, ch * 2, upsample=True),    # 32 -> 64
-            ResBlockG(ch * 2, ch, upsample=True),        # 64 -> 128
-        ])
+        # Dynamiczna liczba bloków z channel multipliers
+        blocks = []
+        in_ch = ch * 16
+        ch_mults = [16, 16, 8, 4, 2, 1]
 
-        self.bn_out = nn.BatchNorm2d(ch)
-        self.conv_out = nn.Conv2d(ch, img_channels, 3, 1, 1)
+        for i in range(self.n_blocks):
+            out_mult = ch_mults[min(i + 1, len(ch_mults) - 1)]
+            out_ch = max(ch * out_mult, ch)
+            blocks.append(ResBlockG(in_ch, out_ch, upsample=True))
+            in_ch = out_ch
+
+        self.blocks = nn.ModuleList(blocks)
+        self.final_ch = in_ch
+
+        self.bn_out = nn.BatchNorm2d(self.final_ch)
+        self.conv_out = nn.Conv2d(self.final_ch, img_channels, 3, 1, 1)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         h = self.fc(z)
@@ -215,22 +226,33 @@ class ResBlockD(nn.Module):
 
 
 class Discriminator(nn.Module):
-    """ResNet Discriminator z SpectralNorm dla 128x128."""
+    """ResNet Discriminator z SpectralNorm - dynamiczny rozmiar obrazu."""
 
-    def __init__(self, ch: int = 64, img_channels: int = 3):
+    def __init__(self, ch: int = 64, img_channels: int = 3, img_size: int = 128):
         super().__init__()
         self.ch = ch
+        self.img_size = img_size
 
-        # 128x128 -> 64 -> 32 -> 16 -> 8 -> 4
-        self.blocks = nn.ModuleList([
-            ResBlockD(img_channels, ch, downsample=True, first=True),  # 128 -> 64
-            ResBlockD(ch, ch * 2, downsample=True),                     # 64 -> 32
-            ResBlockD(ch * 2, ch * 4, downsample=True),                 # 32 -> 16
-            ResBlockD(ch * 4, ch * 8, downsample=True),                 # 16 -> 8
-            ResBlockD(ch * 8, ch * 16, downsample=True),                # 8 -> 4
-            ResBlockD(ch * 16, ch * 16, downsample=False),              # 4 -> 4
-        ])
+        # Oblicz liczbę bloków downsampling
+        import math
+        self.n_blocks = int(math.log2(img_size)) - 2  # -> do 4x4
 
+        # Channel multipliers
+        ch_mults = [1, 2, 4, 8, 16, 16]
+
+        blocks = []
+        in_ch = img_channels
+
+        for i in range(self.n_blocks):
+            out_mult = ch_mults[min(i, len(ch_mults) - 1)]
+            out_ch = ch * out_mult
+            blocks.append(ResBlockD(in_ch, out_ch, downsample=True, first=(i == 0)))
+            in_ch = out_ch
+
+        # Ostatni blok bez downsamplingu
+        blocks.append(ResBlockD(in_ch, ch * 16, downsample=False))
+
+        self.blocks = nn.ModuleList(blocks)
         self.fc = spectral_norm(nn.Linear(ch * 16, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -248,19 +270,33 @@ class Discriminator(nn.Module):
 # ============================================================================
 
 class EMA:
-    """Exponential Moving Average dla modelu."""
+    """Exponential Moving Average dla modelu.
+
+    WAŻNE: Ta wersja prawidłowo kopiuje bufory BatchNorm (running_mean, running_var),
+    nie tylko parametry. Bez tego EMA-generator może generować szum nawet jeśli
+    oryginalny G się uczy.
+    """
 
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.decay = decay
-        self.shadow = copy.deepcopy(model)
-        self.shadow.eval()
+        self.shadow = copy.deepcopy(model).eval()
         for p in self.shadow.parameters():
             p.requires_grad_(False)
 
+        # Cache maps for fast updates
+        self._shadow_params = dict(self.shadow.named_parameters())
+        self._shadow_bufs = dict(self.shadow.named_buffers())
+
     @torch.no_grad()
     def update(self, model: nn.Module):
-        for ema_p, model_p in zip(self.shadow.parameters(), model.parameters()):
-            ema_p.data.mul_(self.decay).add_(model_p.data, alpha=1 - self.decay)
+        # EMA for parameters
+        for name, p in model.named_parameters():
+            self._shadow_params[name].data.mul_(self.decay).add_(p.data, alpha=1.0 - self.decay)
+
+        # COPY buffers (BatchNorm running stats etc.) - bez EMA, bezpośrednia kopia!
+        for name, b in model.named_buffers():
+            if name in self._shadow_bufs:
+                self._shadow_bufs[name].copy_(b)
 
     def forward(self, *args, **kwargs):
         return self.shadow(*args, **kwargs)
@@ -317,11 +353,6 @@ def r1_penalty(D: nn.Module, real_imgs: torch.Tensor) -> torch.Tensor:
     return penalty
 
 
-def hinge_loss_g(fake_logits: torch.Tensor) -> torch.Tensor:
-    """Hinge loss dla Generatora."""
-    return -fake_logits.mean()
-
-
 # ============================================================================
 # Gradient Norm
 # ============================================================================
@@ -361,6 +392,45 @@ class CSVLogger:
 # Evaluation: FID/KID
 # ============================================================================
 
+def export_real_images(dataloader: DataLoader, n_samples: int, out_dir: str) -> str:
+    """
+    Eksportuje prawdziwe obrazy z dataloadera do katalogu (jako PNG).
+    Potrzebne dla torch-fidelity gdy dataset nie jest w formacie ImageFolder.
+
+    Args:
+        dataloader: DataLoader z prawdziwymi danymi
+        n_samples: Liczba próbek do wyeksportowania
+        out_dir: Katalog wyjściowy
+
+    Returns:
+        Ścieżka do katalogu z obrazami
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Sprawdź czy już eksportowano
+    existing_files = [f for f in os.listdir(out_dir) if f.endswith('.png')]
+    if len(existing_files) >= n_samples:
+        print(f"    ✓ Real samples już wyeksportowane ({len(existing_files)} plików)")
+        return out_dir
+
+    print(f"    Eksportowanie {n_samples} real samples do {out_dir}...")
+    idx = 0
+
+    for imgs, _ in dataloader:
+        if idx >= n_samples:
+            break
+        for img in imgs:
+            if idx >= n_samples:
+                break
+            # Denormalizuj [-1, 1] -> [0, 1]
+            img = (img + 1) / 2
+            save_image(img, os.path.join(out_dir, f'{idx:06d}.png'))
+            idx += 1
+
+    print(f"    ✓ Wyeksportowano {idx} real samples")
+    return out_dir
+
+
 def generate_samples(G: nn.Module, n_samples: int, z_dim: int, batch_size: int,
                      device: torch.device, out_dir: str) -> str:
     """Generuje próbki i zapisuje do katalogu."""
@@ -374,10 +444,8 @@ def generate_samples(G: nn.Module, n_samples: int, z_dim: int, batch_size: int,
 
     with torch.no_grad():
         for batch_idx in range(n_batches):
-            # Progress feedback co 20 batchy lub ostatni
             if batch_idx % 20 == 0 or batch_idx == n_batches - 1:
-                progress = (idx / n_samples) * 100
-                print(f"    -> {idx}/{n_samples} próbek ({progress:.1f}%)")
+                print(f"    -> {idx}/{n_samples} próbek ({idx/n_samples*100:.1f}%)")
 
             z = torch.randn(min(batch_size, n_samples - idx), z_dim, device=device)
             imgs = G(z)
@@ -390,7 +458,7 @@ def generate_samples(G: nn.Module, n_samples: int, z_dim: int, batch_size: int,
                 idx += 1
 
     print(f"    ✓ Wygenerowano wszystkie {n_samples} próbek")
-    G.train()
+
     return out_dir
 
 
@@ -399,8 +467,7 @@ def compute_fid_kid(real_dir: str, fake_dir: str, fid_samples: int = 10000) -> D
     try:
         from torch_fidelity import calculate_metrics
 
-        print(f"    Obliczanie FID/KID dla {fid_samples} próbek...")
-        print(f"    (To może potrwać 5-15 minut, obliczenia Inception...)")
+        print(f"    Obliczanie FID/KID dla {fid_samples} próbek (może potrwać 5-15 min)...")
 
         metrics = calculate_metrics(
             input1=fake_dir,
@@ -409,17 +476,15 @@ def compute_fid_kid(real_dir: str, fake_dir: str, fid_samples: int = 10000) -> D
             fid=True,
             kid=True,
             kid_subset_size=min(1000, fid_samples),
-            verbose=False,  # torch-fidelity ma swój progress, ale jest spammy
+            verbose=False,
         )
-
-        print(f"    ✓ Metryki obliczone!")
 
         return {
             'fid': metrics.get('frechet_inception_distance', float('nan')),
-            'kid': metrics.get('kernel_inception_distance_mean', float('nan')) * 1000,  # x1000 dla czytelności
+            'kid': metrics.get('kernel_inception_distance_mean', float('nan')) * 1000,
         }
     except Exception as e:
-        print(f"    ✗ Błąd przy obliczaniu FID/KID: {e}")
+        print(f"    ✗ Błąd: {e}")
         return {'fid': float('nan'), 'kid': float('nan')}
 
 
@@ -428,19 +493,64 @@ def compute_fid_kid(real_dir: str, fake_dir: str, fid_samples: int = 10000) -> D
 # ============================================================================
 
 def get_dataloader(data_dir: str, img_size: int, batch_size: int,
-                   num_workers: int = 4) -> DataLoader:
-    """Tworzy DataLoader dla CelebA."""
-    transform = transforms.Compose([
-        transforms.Resize(img_size),
-        transforms.CenterCrop(img_size),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-    ])
+                   num_workers: int = 4, dataset_name: str = "celeba",
+                   img_channels: int = 3) -> DataLoader:
+    """
+    Tworzy DataLoader dla wybranego datasetu.
 
-    dataset = datasets.ImageFolder(
-        root=os.path.dirname(data_dir),
-        transform=transform,
-    )
+    Args:
+        data_dir: Ścieżka do danych lub katalog do pobrania
+        img_size: Rozmiar obrazu
+        batch_size: Rozmiar batcha
+        num_workers: Liczba workerów
+        dataset_name: "celeba", "cifar10", "cifar100", "mnist", "fashion_mnist"
+        img_channels: Liczba kanałów (3 dla RGB, 1 dla grayscale)
+
+    Returns:
+        DataLoader
+    """
+    # Normalizacja
+    normalize = transforms.Normalize([0.5] * img_channels, [0.5] * img_channels)
+
+    # Wybór datasetu
+    dataset_name = dataset_name.lower()
+
+    if dataset_name == "celeba":
+        transform = transforms.Compose([
+            transforms.Resize(img_size),
+            transforms.CenterCrop(img_size),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        dataset = datasets.ImageFolder(root=os.path.dirname(data_dir), transform=transform)
+
+    elif dataset_name in ["cifar10", "cifar100"]:
+        transform = transforms.Compose([
+            transforms.Resize(img_size),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        download_dir = data_dir if os.path.isdir(data_dir) else f"/tmp/{dataset_name}"
+        dataset_class = datasets.CIFAR10 if dataset_name == "cifar10" else datasets.CIFAR100
+        dataset = dataset_class(root=download_dir, train=True, download=True, transform=transform)
+
+    elif dataset_name in ["mnist", "fashion_mnist"]:
+        base_transforms = [transforms.Resize(img_size), transforms.ToTensor()]
+
+        # Konwertuj grayscale do RGB jeśli potrzeba
+        if img_channels == 3:
+            base_transforms.append(transforms.Lambda(lambda x: x.repeat(3, 1, 1)))
+
+        base_transforms.append(normalize)
+        transform = transforms.Compose(base_transforms)
+
+        download_dir = data_dir if os.path.isdir(data_dir) else f"/tmp/{dataset_name}"
+        dataset_class = datasets.MNIST if dataset_name == "mnist" else datasets.FashionMNIST
+        dataset = dataset_class(root=download_dir, train=True, download=True, transform=transform)
+
+    else:
+        raise ValueError(f"Nieznany dataset: {dataset_name}. "
+                        f"Dostępne: celeba, cifar10, cifar100, mnist, fashion_mnist")
 
     dataloader = DataLoader(
         dataset,
@@ -450,6 +560,9 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         pin_memory=True,
         drop_last=True,
     )
+
+    print(f"Dataset: {dataset_name}, rozmiar: {len(dataset)}, "
+          f"img_size: {img_size}, channels: {img_channels}")
 
     return dataloader
 
@@ -478,15 +591,16 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     print(f"Device: {device}")
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
+    dataset_name = getattr(cfg, 'dataset_name', 'celeba')
+    print(f"Dataset: {dataset_name} ({cfg.img_size}x{cfg.img_size})")
     print(f"=" * 60)
 
     # Directories
     os.makedirs(cfg.out_dir, exist_ok=True)
 
     # Save actual config for reproducibility
-    from .config_loader import ConfigLoader
-    loader = ConfigLoader()
-    loader.save_config(cfg, os.path.join(cfg.out_dir, "config_used.yaml"))
+    ConfigLoader().save_config(cfg, os.path.join(cfg.out_dir, "config_used.yaml"))
+
     grid_dir = os.path.join(cfg.out_dir, "grids")
     ckpt_dir = os.path.join(cfg.out_dir, "checkpoints")
     samples_dir = os.path.join(cfg.out_dir, "samples")
@@ -495,8 +609,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     os.makedirs(samples_dir, exist_ok=True)
 
     # Models
-    G = Generator(z_dim=cfg.z_dim, ch=cfg.g_ch, img_channels=cfg.img_channels).to(device)
-    D = Discriminator(ch=cfg.d_ch, img_channels=cfg.img_channels).to(device)
+    G = Generator(z_dim=cfg.z_dim, ch=cfg.g_ch, img_channels=cfg.img_channels, img_size=cfg.img_size).to(device)
+    D = Discriminator(ch=cfg.d_ch, img_channels=cfg.img_channels, img_size=cfg.img_size).to(device)
     G_ema = EMA(G, decay=cfg.ema_decay)
 
     # Optimizers
@@ -505,13 +619,38 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     # DataLoader
     try:
-        dataloader = get_dataloader(cfg.data_dir, cfg.img_size, cfg.batch_size)
-        data_iter = iter(dataloader)
+        dataloader = get_dataloader(
+            cfg.data_dir, cfg.img_size, cfg.batch_size,
+            dataset_name=dataset_name, img_channels=cfg.img_channels
+        )
     except Exception as e:
-        print(f"Błąd ładowania danych: {e}")
-        print("Używam dummy data dla testów...")
-        dataloader = None
-        data_iter = None
+        raise RuntimeError(
+            f"Data loading failed, stop training (otherwise you'll train on dummy noise). "
+            f"Error: {e}"
+        )
+
+    # Sanity check: zapisz real_grid.png na starcie żeby sprawdzić czy dane są OK
+    data_iter = iter(dataloader)
+    real_imgs_check, _ = next(data_iter)
+    print(f"REAL data stats: min={real_imgs_check.min().item():.3f}, "
+          f"max={real_imgs_check.max().item():.3f}, "
+          f"mean={real_imgs_check.mean().item():.3f}")
+    save_image(
+        (real_imgs_check[:64] + 1) / 2,  # [-1,1] -> [0,1]
+        os.path.join(cfg.out_dir, "real_grid.png"),
+        nrow=8
+    )
+    print(f"Zapisano real_grid.png - sprawdź czy dane wyglądają sensownie!")
+
+    # Przygotuj real_samples_dir dla FID/KID
+    if dataset_name.lower() == "celeba":
+        real_samples_dir = cfg.data_dir
+    else:
+        # Export real images dla datasetu bez ImageFolder (CIFAR, MNIST, etc.)
+        real_samples_dir = os.path.join(cfg.out_dir, "real_samples")
+        if cfg.eval_every > 0:
+            print(f"\nPrzygotowuję real samples dla FID/KID...")
+            export_real_images(dataloader, cfg.fid_samples, real_samples_dir)
 
     # Logging
     csv_logger = CSVLogger(
@@ -541,7 +680,6 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     t0 = time.time()
     losses_G: List[float] = []
     best_fid = float('inf')
-    fid_history: List[Tuple[int, float]] = []  # (step, fid)
 
     print(f"\nRozpoczynam trening: {cfg.steps} iteracji")
     print(f"Batch size: {cfg.batch_size}, LR: {cfg.lr_G}")
@@ -552,16 +690,12 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         iter_start = time.time()
 
         # Get real data
-        if data_iter is not None:
-            try:
-                real_imgs, _ = next(data_iter)
-            except StopIteration:
-                data_iter = iter(dataloader)
-                real_imgs, _ = next(data_iter)
-            real_imgs = real_imgs.to(device)
-        else:
-            # Dummy data for testing
-            real_imgs = torch.randn(cfg.batch_size, cfg.img_channels, cfg.img_size, cfg.img_size, device=device)
+        try:
+            real_imgs, _ = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            real_imgs, _ = next(data_iter)
+        real_imgs = real_imgs.to(device)
 
         # ==================== Train D ====================
         D.zero_grad()
@@ -579,12 +713,9 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         loss_D = hinge_loss_d(real_logits, fake_logits)
 
         # R1 gradient penalty (optional, costly but stabilizing)
-        if hasattr(cfg, 'use_r1_penalty') and cfg.use_r1_penalty:
-            r1_every = getattr(cfg, 'r1_every', 16)
-            if step % r1_every == 0:
-                r1_lambda = getattr(cfg, 'r1_lambda', 10.0)
-                gp = r1_penalty(D, real_imgs)
-                loss_D = loss_D + r1_lambda * gp
+        if cfg.use_r1_penalty and step % cfg.r1_every == 0:
+            gp = r1_penalty(D, real_imgs)
+            loss_D = loss_D + cfg.r1_lambda * gp
 
         loss_D.backward()
         grad_norm_D = compute_grad_norm(D)
@@ -609,15 +740,7 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         # Metrics
         iter_time = time.time() - iter_start
         vram_peak = torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else 0
-
         losses_G.append(loss_G.item())
-
-        # Detect potential mode collapse (sudden loss spikes)
-        if len(losses_G) > 10:
-            recent_avg = sum(losses_G[-10:-1]) / 9
-            if abs(loss_G.item() - recent_avg) > 5.0:
-                print(f"  ⚠️  [UWAGA krok {step}] Nagły skok w loss_G: {loss_G.item():.2f} "
-                      f"(średnia z 10: {recent_avg:.2f}). Możliwy mode collapse!")
 
         # ==================== Logging ====================
         if cfg.log_every > 0 and step % cfg.log_every == 0:
@@ -635,7 +758,14 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             csv_logger.log(log_data)
 
             if cfg.use_wandb and _HAS_WANDB:
-                wandb.log({k: v for k, v in log_data.items() if v is not None}, step=step)
+                wandb.log({
+                    'loss_D': loss_D.item(),
+                    'loss_G': loss_G.item(),
+                    'grad_norm_D': grad_norm_D,
+                    'grad_norm_G': grad_norm_G,
+                    'sec_per_iter': iter_time,
+                    'vram_peak_mb': vram_peak,
+                }, step=step)
 
             print(f"[{step:06d}/{cfg.steps}] D:{loss_D.item():.4f} G:{loss_G.item():.4f} "
                   f"gD:{grad_norm_D:.2f} gG:{grad_norm_G:.2f} "
@@ -693,27 +823,19 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             )
 
             # Compute FID/KID
-            if dataloader is not None:
-                print(f"     (2/2) Obliczanie metryk FID/KID...")
-                metrics = compute_fid_kid(cfg.data_dir, eval_samples_dir, cfg.fid_samples)
-                current_fid = metrics['fid']
-                print(f"  -> FID: {current_fid:.2f}, KID: {metrics['kid']:.4f}")
+            print(f"     (2/2) Obliczanie metryk FID/KID...")
+            metrics = compute_fid_kid(real_samples_dir, eval_samples_dir, cfg.fid_samples)
+            current_fid = metrics['fid']
+            print(f"  -> FID: {current_fid:.2f}, KID: {metrics['kid']:.4f}")
 
-                # Track FID improvements/degradations
-                fid_history.append((step, current_fid))
-                if current_fid < best_fid:
-                    improvement = best_fid - current_fid
-                    best_fid = current_fid
-                    print(f"  ✓ Nowy najlepszy FID! (poprawa: {improvement:.2f})")
-                elif len(fid_history) > 1:
-                    prev_fid = fid_history[-2][1]
-                    degradation = current_fid - prev_fid
-                    print(f"  ⚠️  FID pogorszył się o {degradation:.2f} (poprzedni: {prev_fid:.2f})")
-                    if degradation > 20:
-                        print(f"  ⚠️  UWAGA: Znaczące pogorszenie! Możliwy mode collapse lub overfitting.")
+            # Track best FID
+            if current_fid < best_fid:
+                improvement = best_fid - current_fid
+                best_fid = current_fid
+                print(f"  ✓ Nowy najlepszy FID! (poprawa: {improvement:.2f})")
 
-                if cfg.use_wandb and _HAS_WANDB:
-                    wandb.log({'fid': metrics['fid'], 'kid': metrics['kid']}, step=step)
+            if cfg.use_wandb and _HAS_WANDB:
+                wandb.log({'fid': metrics['fid'], 'kid': metrics['kid']}, step=step)
 
     # ==================== Final ====================
     total_time = time.time() - t0

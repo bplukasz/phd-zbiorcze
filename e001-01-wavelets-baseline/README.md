@@ -19,6 +19,7 @@ ResNet GAN baseline z hinge loss, SpectralNorm, EMA, DiffAugment na CelebA 128x1
 - **`QUICK_FIX.md`** - szybki start z poprawkami
 - **`ANALIZA_WYNIKOW.md`** - szczegółowa analiza problemu
 - **`TO_NAPRAWIENIE.md`** - pełna dokumentacja zmian
+- **`SPEED_MATH.md`** ⚡ - dlaczego mniejsze obrazy nie dają 16x przyspieszenia
 
 ---
 
@@ -76,10 +77,83 @@ Zobacz szczegóły w [CONFIG_SYSTEM.md](CONFIG_SYSTEM.md).
 - Z W&B
 - Do weryfikacji pipeline'u
 
+### fast ⚡ (NOWY)
+- **CIFAR-10 32x32** zamiast CelebA 128x128
+- **~3-4x szybciej** per iteracja (ten sam batch 64)
+- Automatyczne pobieranie datasetu
+- 20k kroków, batch 64
+- Idealny do szybkiego prototypowania
+
+### fast-small-batch ⚡⚡ (NOWY)
+- **CIFAR-10 32x32**, batch 32 (mały!)
+- **~8-10x szybciej** per iteracja
+- Maksymalna prędkość iteracji
+- 40k kroków (więcej bo mniejszy batch)
+- Gdy liczy się szybkość feedbacku
+
+### fast64 ⚡ (NOWY)
+- **CelebA 64x64** (przeskalowane)
+- **~2-3x szybciej** niż 128x128
+- Nadal twarze, ale mniejsze
+- 20k kroków
+- Kompromis między szybkością a jakością
+
 ### train
 - **30k kroków**, batch 64
 - Pełne metryki (FID/KID)
 - Produkcyjny trening
+
+## ⚡ Szybkie eksperymenty
+
+Jeśli iteracja trwa ~0.5s i trening jest za wolny, użyj szybkich profili:
+
+```python
+# Szybko: CIFAR-10 32x32, batch 64 (jak train)
+model, losses = train("fast")  # ~3-4x szybciej per iteracja
+
+# BARDZO szybko: CIFAR-10 32x32, batch 32
+model, losses = train("fast-small-batch")  # ~8-10x szybciej per iteracja
+
+# Kompromis: CelebA 64x64
+model, losses = train("fast64")  # ~2-3x szybciej
+```
+
+**UWAGA**: Mniejszy batch_size = szybsza iteracja, ale:
+- Potrzebujesz więcej iteracji dla tego samego pokrycia danych
+- Trening może być mniej stabilny (większy szum w gradientach)
+
+**Przykład**:
+- `train`: 500ms/iter × 30k iteracji = 4.2h (batch 64, 128x128)
+- `fast`: 150ms/iter × 20k iteracji = 0.8h (batch 64, 32x32)
+- `fast-small-batch`: 50ms/iter × 40k iteracji = 0.5h (batch 32, 32x32)
+
+**📖 Szczegóły matematyczne**: Zobacz [SPEED_MATH.md](SPEED_MATH.md) - wyjaśnienie dlaczego 
+16x mniejszy obraz nie daje 16x przyspieszenia (GPU overheady, stałe koszty, itp.)
+
+Możesz też mieszać parametry:
+```python
+# CIFAR-10 z większym batchem (wolniej, ale stabilniej)
+model, losses = train("fast", overrides={"batch_size": 128})
+
+# CelebA 64x64 z włączonym R1
+model, losses = train("fast64", overrides={"use_r1_penalty": True})
+```
+
+## Dostępne datasety
+
+| Dataset | Rozmiar | Kanały | Opis |
+|---------|---------|--------|------|
+| celeba | 128x128 | RGB | Twarze (domyślny) |
+| cifar10 | 32x32 | RGB | 10 klas, auto-download |
+| cifar100 | 32x32 | RGB | 100 klas, auto-download |
+| mnist | 28x28 | Gray→RGB | Cyfry, auto-download |
+| fashion_mnist | 28x28 | Gray→RGB | Ubrania, auto-download |
+
+Zmiana datasetu w konfiguracji:
+```yaml
+dataset_name: "cifar10"  # lub mnist, fashion_mnist, etc.
+img_size: 32
+```
 
 ## Uruchomienie
 
@@ -93,6 +167,21 @@ model, losses = train("preview")  # lub "smoke", "train"
 ```bash
 python run.py --profile train
 python run.py --profile smoke --steps 1000 --no-wandb
+```
+
+### Benchmark prędkości
+Zmierz rzeczywisty czas per iterację dla różnych profili:
+```bash
+python benchmark_speed.py
+```
+Wynik przykładowy:
+```
+Profile              Batch    Size     ms/iter    VRAM(MB)   Speedup   
+--------------------------------------------------------------------------------
+train                64       128      487.2      3542       1.00x
+fast                 64       32       142.8      892        3.41x
+fast-small-batch     32       32       51.3       478        9.50x
+fast64               64       64       215.6      1789       2.26x
 ```
 
 ## Struktura

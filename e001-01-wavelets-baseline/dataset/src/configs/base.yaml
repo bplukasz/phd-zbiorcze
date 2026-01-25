@@ -1,43 +1,4 @@
 # Bazowa konfiguracja dla wszystkich eksperymentów
-# Te wartości są wspólne dla wszystkich profili i mogą być nadpisane w profilach
-
-# === TRAINING ===
-steps: 30000
-batch_size: 64
-lr_G: 0.0002
-lr_D: 0.0002
-betas: [0.0, 0.99]
-
-# === REGULARIZATION ===
-# R1 gradient penalty (stabilizuje D, zapobiega mode collapse)
-use_r1_penalty: false  # włącz w train profile
-r1_lambda: 10.0
-r1_every: 16  # stosuj co 16 iteracji (oszczędność obliczeń)
-
-# === MODEL ===
-z_dim: 128
-img_size: 128
-img_channels: 3
-g_ch: 64
-d_ch: 64
-
-# === EMA ===
-ema_decay: 0.999
-
-# === AUGMENTATION ===
-diffaug_policy: "color,translation,cutout"
-
-# === LOGGING ===
-log_every: 1
-grid_every: 1000
-ckpt_every: 5000
-eval_every: 10000
-live: false
-use_wandb: true
-
-# === EVALUATION ===
-eval_samples: 50000
-fid_samples: 10000
 
 # === PATHS ===
 out_dir: "/kaggle/working/artifacts"

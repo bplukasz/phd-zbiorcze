@@ -1,0 +1,42 @@
+# Profil: fast64
+# CelebA w niższej rozdzielczości (64x64)
+# ~2-3x szybciej niż CelebA 128x128, nadal twarze
+
+name: "fast64"
+
+# === DATASET ===
+# CelebA ale przeskalowane do 64x64
+dataset_name: "celeba"
+img_size: 64
+img_channels: 3
+
+# === MODEL ===
+# Model dla 64x64 (4 bloki upsampling zamiast 5)
+z_dim: 128
+g_ch: 64
+d_ch: 64
+
+# === TRAINING ===
+steps: 20000
+batch_size: 64
+
+lr_D: 0.0001
+lr_G: 0.0002
+
+# === REGULARIZATION ===
+use_r1_penalty: false  # wyłączone dla szybkości, włącz dla stabilności
+
+# === LOGGING ===
+log_every: 1
+grid_every: 1000
+ckpt_every: 5000
+eval_every: 5000
+live: false
+use_wandb: true
+
+# === EVALUATION ===
+eval_samples: 25000
+fid_samples: 5000
+
+# === PATHS ===
+data_dir: "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"

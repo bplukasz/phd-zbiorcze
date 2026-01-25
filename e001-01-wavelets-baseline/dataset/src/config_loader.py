@@ -37,6 +37,11 @@ class RunConfig:
     # DiffAugment
     diffaug_policy: str = "color,translation,cutout"
 
+    # Regularization
+    use_r1_penalty: bool = False
+    r1_lambda: float = 10.0
+    r1_every: int = 16
+
     # Logging
     log_every: int = 1
     grid_every: int = 1000
@@ -49,6 +54,9 @@ class RunConfig:
     eval_samples: int = 50000
     fid_samples: int = 10000
 
+    # Dataset
+    dataset_name: str = "celeba"  # celeba, cifar10, cifar100, mnist, fashion_mnist
+
     # Output
     out_dir: str = "/kaggle/working/artifacts"
     data_dir: str = "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
@@ -57,22 +65,14 @@ class RunConfig:
         """Aktualizuje konfigurację wartościami ze słownika."""
         for key, value in updates.items():
             if hasattr(self, key):
-                # Zachowaj typ pola jeśli to tuple
-                field_type = type(getattr(self, key))
-                if field_type == tuple and isinstance(value, list):
+                # Konwertuj listy na tuple dla pola betas
+                if key == 'betas' and isinstance(value, list):
                     value = tuple(value)
                 setattr(self, key, value)
-            else:
-                print(f"Warning: Unknown config key '{key}' ignored")
 
     def to_dict(self) -> Dict[str, Any]:
         """Konwertuje konfigurację do słownika."""
-        data = asdict(self)
-        # Konwertuj tuple na listy dla kompatybilności z YAML
-        for key, value in data.items():
-            if isinstance(value, tuple):
-                data[key] = list(value)
-        return data
+        return asdict(self)
 
 
 class ConfigLoader:
@@ -102,11 +102,6 @@ class ConfigLoader:
         """
         Ładuje konfigurację dla danego profilu.
 
-        Proces ładowania:
-        1. Załaduj base.yaml (domyślne wartości)
-        2. Załaduj {profile}.yaml (nadpisuje base)
-        3. Zastosuj overrides z argumentów (nadpisuje wszystko)
-
         Args:
             profile: Nazwa profilu (np. "preview", "train", "smoke")
             overrides: Dodatkowe nadpisania z argumentów CLI
@@ -114,31 +109,22 @@ class ConfigLoader:
         Returns:
             RunConfig z połączoną konfiguracją
         """
-        # Zacznij od pustej konfiguracji
         config = RunConfig()
 
         # 1. Załaduj bazową konfigurację
-        base_path = self.config_dir / "base.yaml"
-        base_config = self.load_yaml(base_path)
+        base_config = self.load_yaml(self.config_dir / "base.yaml")
         if base_config:
             config.update_from_dict(base_config)
 
         # 2. Załaduj konfigurację profilu
         profile = profile.strip().lower()
-        profile_path = self.config_dir / f"{profile}.yaml"
-        profile_config = self.load_yaml(profile_path)
+        profile_config = self.load_yaml(self.config_dir / f"{profile}.yaml")
         if profile_config:
             config.update_from_dict(profile_config)
-        elif profile not in ["custom", ""]:
-            print(f"Warning: Profile config '{profile}.yaml' not found, using base config")
 
         # 3. Zastosuj CLI overrides
         if overrides:
             config.update_from_dict(overrides)
-
-        # Upewnij się że nazwa profilu jest ustawiona
-        if not profile_config and profile:
-            config.name = profile
 
         return config
 
@@ -147,10 +133,6 @@ class ConfigLoader:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             yaml.dump(config.to_dict(), f, default_flow_style=False, sort_keys=False)
-
-
-# Singleton instance
-_default_loader: Optional[ConfigLoader] = None
 
 
 def get_config(profile: str = "preview",
@@ -167,9 +149,5 @@ def get_config(profile: str = "preview",
     Returns:
         RunConfig z załadowaną konfiguracją
     """
-    global _default_loader
-
-    if config_dir is not None or _default_loader is None:
-        _default_loader = ConfigLoader(config_dir)
-
-    return _default_loader.get_config(profile, overrides)
+    loader = ConfigLoader(config_dir)
+    return loader.get_config(profile, overrides)

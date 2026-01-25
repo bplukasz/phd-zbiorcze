@@ -92,6 +92,22 @@ python run.py --profile smoke
 - **W&B**: Tak
 - **Użycie**: Produkcyjny trening z pełnymi metrykami
 
+### fast ⚡
+- **Przeznaczenie**: Szybkie prototypowanie
+- **Dataset**: CIFAR-10 (32x32, auto-download)
+- **Kroki**: 10000
+- **Batch size**: 128
+- **Przyspieszenie**: ~4-8x szybciej niż train
+- **Użycie**: Testowanie nowych pomysłów
+
+### fast64 ⚡
+- **Przeznaczenie**: Kompromis szybkość/jakość
+- **Dataset**: CelebA (64x64)
+- **Kroki**: 20000
+- **Batch size**: 64
+- **Przyspieszenie**: ~2-3x szybciej niż train
+- **Użycie**: Prototypowanie z twarzami
+
 ## Struktura konfiguracji
 
 ### base.yaml
@@ -118,6 +134,11 @@ ema_decay: 0.999
 # AUGMENTATION
 diffaug_policy: "color,translation,cutout"
 
+# REGULARIZATION
+use_r1_penalty: false
+r1_lambda: 10.0
+r1_every: 16
+
 # LOGGING
 log_every: 1
 grid_every: 1000
@@ -130,9 +151,30 @@ use_wandb: true
 eval_samples: 50000
 fid_samples: 10000
 
+# DATASET
+dataset_name: "celeba"  # celeba, cifar10, cifar100, mnist, fashion_mnist
+
 # PATHS
 out_dir: "/kaggle/working/artifacts"
 data_dir: "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
+```
+
+## Dostępne datasety
+
+| Dataset | Rozmiar | Kanały | Auto-download | Opis |
+|---------|---------|--------|---------------|------|
+| `celeba` | 128x128* | RGB | Nie | Twarze celebrytów (domyślny) |
+| `cifar10` | 32x32* | RGB | Tak | 10 klas obiektów |
+| `cifar100` | 32x32* | RGB | Tak | 100 klas obiektów |
+| `mnist` | 28x28* | Gray→RGB | Tak | Cyfry 0-9 |
+| `fashion_mnist` | 28x28* | Gray→RGB | Tak | Ubrania |
+
+\* Rozmiar natywny, można przeskalować przez `img_size`
+
+Przykład zmiany datasetu:
+```yaml
+dataset_name: "cifar10"
+img_size: 32
 ```
 
 ### Profil (np. preview.yaml)
