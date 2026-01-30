@@ -83,9 +83,11 @@ OVERRIDES = {
 # ============================================================================
 
 from src import train, get_config
+from src.wavelets import run_all_tests
 
-if __name__ == "__main__":
-    # Display config
+
+def run_training():
+    """Uruchamia trening modelu GAN."""
     cfg = get_config(PROFILE, OVERRIDES)
 
     print(f"\nKonfiguracja:")
@@ -107,4 +109,42 @@ if __name__ == "__main__":
     print("=" * 60)
 
 
+def run_wavelet_tests():
+    """Uruchamia testy transformaty falkowej DWT2D/IDWT2D."""
+    print("\n" + "=" * 60)
+    print("Uruchamianie testów transformaty falkowej DWT2D/IDWT2D")
+    print("=" * 60)
+
+    # Uruchom wszystkie testy
+    output_dir = '/kaggle/working/dwt_test_output'
+
+    # Wybierz przykładowy obraz z CelebA (jeśli dostępny)
+    celeba_img_dir = '/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba'
+    real_image = None
+    if os.path.exists(celeba_img_dir):
+        # Użyj pierwszego dostępnego obrazu
+        celeba_images = sorted([f for f in os.listdir(celeba_img_dir) if f.endswith('.jpg')])
+        if celeba_images:
+            real_image = os.path.join(celeba_img_dir, celeba_images[0])
+            print(f"Użyty obraz testowy: {celeba_images[0]}")
+
+    results = run_all_tests(output_dir=output_dir, real_image_path=real_image)
+
+    print("\n" + "=" * 60)
+    print("Testy zakończone!")
+    print(f"Wyniki zapisane w: {output_dir}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    # Wybierz tryb działania:
+    MODE = "wavelet_tests"  # "training" lub "wavelet_tests"
+
+    if MODE == "training":
+        run_training()
+    elif MODE == "wavelet_tests":
+        run_wavelet_tests()
+    else:
+        print(f"Nieznany tryb: {MODE}")
+        print("Dostępne tryby: 'training', 'wavelet_tests'")
 
