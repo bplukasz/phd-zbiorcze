@@ -9,3 +9,20 @@ use_wavelet_branch: false
 wavelet_hf_only: false
 wavelet_type: "haar"   # haar | db2
 wavelet_level: 1
+
+# === WAVELET-ENERGY MATCHING REGULARIZATION ===
+# Dopasowanie statystyk energii pasm DWT (LL/LH/HL/HH) pomiędzy real i fake w treningu.
+use_wavereg: false
+lambda_wavereg: 0.0
+wavereg_apply_to: "g"        # g | d | both
+wavereg_wavelet: "haar"      # haar | db2
+wavereg_eps: 1.0e-8
+
+# === FOURIER (FFT) ENERGY MATCHING REGULARIZATION (BASELINE) ===
+use_fftreg: false
+lambda_fftreg: 0.0
+fftreg_apply_to: "g"          # g | d | both
+fftreg_num_bins: 16
+fftreg_downsample_to: 64
+fftreg_every: 1
+fftreg_eps: 1.0e-8

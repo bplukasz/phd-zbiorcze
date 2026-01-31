@@ -33,7 +33,14 @@ except ImportError:
 # Re-export wszystkich potrzebnych komponentów dla zachowania kompatybilności wstecznej
 from .augmentations import DiffAugment, AUGMENT_FNS
 from .models import Generator, Discriminator, EMA, ResBlockG, ResBlockD, spectral_norm
-from .losses import hinge_loss_d, hinge_loss_g, r1_penalty, compute_grad_norm
+from .losses import (
+    hinge_loss_d,
+    hinge_loss_g,
+    r1_penalty,
+    compute_grad_norm,
+    wavelet_energy_matching_loss,
+    fft_energy_matching_loss,
+)
 from .data import get_dataloader
 from .metrics import (
     export_real_images,
@@ -98,6 +105,7 @@ __all__ = [
     'get_config',
     'ConfigLoader',
 ]
+
 
 def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) -> Tuple[nn.Module, List[float]]:
     """
@@ -196,6 +204,15 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             'sec_per_iter', 'vram_peak_mb',
             'fid', 'kid',
             'rpse', 'wbed_total',
+            # Wavelet-energy matching regularization
+            'wavereg_loss',
+            'wavereg_mu_real_LL', 'wavereg_std_real_LL', 'wavereg_mu_fake_LL', 'wavereg_std_fake_LL',
+            'wavereg_mu_real_LH', 'wavereg_std_real_LH', 'wavereg_mu_fake_LH', 'wavereg_std_fake_LH',
+            'wavereg_mu_real_HL', 'wavereg_std_real_HL', 'wavereg_mu_fake_HL', 'wavereg_std_fake_HL',
+            'wavereg_mu_real_HH', 'wavereg_std_real_HH', 'wavereg_mu_fake_HH', 'wavereg_std_fake_HH',
+            # Fourier (FFT) energy matching regularization
+            'fftreg_loss',
+            'fftreg_time_ms',
         ]
     )
 
@@ -237,6 +254,12 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             real_imgs, _ = next(data_iter)
         real_imgs = real_imgs.to(device)
 
+        wavereg_stats: Dict[str, float] = {}
+        wavereg_loss_val: Optional[torch.Tensor] = None
+        fftreg_stats: Dict[str, float] = {}
+        fftreg_loss_val: Optional[torch.Tensor] = None
+        fftreg_time_ms: Optional[float] = None
+
         # ==================== Train D ====================
         D.zero_grad()
 
@@ -251,6 +274,41 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         fake_logits = D(fake_aug)
 
         loss_D = hinge_loss_d(real_logits, fake_logits)
+
+        # Wavelet-energy matching regularization (optional)
+        if getattr(cfg, 'use_wavereg', False) and getattr(cfg, 'lambda_wavereg', 0.0) > 0:
+            apply_to = str(getattr(cfg, 'wavereg_apply_to', 'g')).lower()
+            if apply_to in ('d', 'both'):
+                reg, reg_logs = wavelet_energy_matching_loss(
+                    real_imgs=real_imgs,
+                    fake_imgs=fake_imgs,
+                    wavelet=str(getattr(cfg, 'wavereg_wavelet', 'haar')),
+                    eps=float(getattr(cfg, 'wavereg_eps', 1e-8)),
+                )
+                wavereg_loss_val = reg
+                wavereg_stats.update(reg_logs)
+                loss_D = loss_D + float(cfg.lambda_wavereg) * reg
+
+        # Fourier (FFT) energy matching regularization (optional baseline)
+        if (
+            getattr(cfg, 'use_fftreg', False)
+            and getattr(cfg, 'lambda_fftreg', 0.0) > 0
+            and (step % int(getattr(cfg, 'fftreg_every', 1)) == 0)
+        ):
+            apply_to = str(getattr(cfg, 'fftreg_apply_to', 'g')).lower()
+            if apply_to in ('d', 'both'):
+                t_reg0 = time.time()
+                reg, reg_logs = fft_energy_matching_loss(
+                    real_imgs=real_imgs,
+                    fake_imgs=fake_imgs,
+                    num_bins=int(getattr(cfg, 'fftreg_num_bins', 16)),
+                    downsample_to=int(getattr(cfg, 'fftreg_downsample_to', 64)),
+                    eps=float(getattr(cfg, 'fftreg_eps', 1e-8)),
+                )
+                fftreg_time_ms = (time.time() - t_reg0) * 1000.0
+                fftreg_loss_val = reg
+                fftreg_stats.update(reg_logs)
+                loss_D = loss_D + float(cfg.lambda_fftreg) * reg
 
         # R1 gradient penalty (optional, costly but stabilizing)
         if cfg.use_r1_penalty and step % cfg.r1_every == 0:
@@ -270,6 +328,42 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         fake_logits = D(fake_aug)
 
         loss_G = hinge_loss_g(fake_logits)
+
+        # Wavelet-energy matching regularization (optional)
+        if getattr(cfg, 'use_wavereg', False) and getattr(cfg, 'lambda_wavereg', 0.0) > 0:
+            apply_to = str(getattr(cfg, 'wavereg_apply_to', 'g')).lower()
+            if apply_to in ('g', 'both'):
+                reg, reg_logs = wavelet_energy_matching_loss(
+                    real_imgs=real_imgs,
+                    fake_imgs=fake_imgs,
+                    wavelet=str(getattr(cfg, 'wavereg_wavelet', 'haar')),
+                    eps=float(getattr(cfg, 'wavereg_eps', 1e-8)),
+                )
+                wavereg_loss_val = reg
+                wavereg_stats.update(reg_logs)
+                loss_G = loss_G + float(cfg.lambda_wavereg) * reg
+
+        # Fourier (FFT) energy matching regularization (optional baseline)
+        if (
+            getattr(cfg, 'use_fftreg', False)
+            and getattr(cfg, 'lambda_fftreg', 0.0) > 0
+            and (step % int(getattr(cfg, 'fftreg_every', 1)) == 0)
+        ):
+            apply_to = str(getattr(cfg, 'fftreg_apply_to', 'g')).lower()
+            if apply_to in ('g', 'both'):
+                t_reg0 = time.time()
+                reg, reg_logs = fft_energy_matching_loss(
+                    real_imgs=real_imgs,
+                    fake_imgs=fake_imgs,
+                    num_bins=int(getattr(cfg, 'fftreg_num_bins', 16)),
+                    downsample_to=int(getattr(cfg, 'fftreg_downsample_to', 64)),
+                    eps=float(getattr(cfg, 'fftreg_eps', 1e-8)),
+                )
+                fftreg_time_ms = (time.time() - t_reg0) * 1000.0
+                fftreg_loss_val = reg
+                fftreg_stats.update(reg_logs)
+                loss_G = loss_G + float(cfg.lambda_fftreg) * reg
+
         loss_G.backward()
         grad_norm_G = compute_grad_norm(G)
         opt_G.step()
@@ -296,18 +390,36 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 'kid': None,
                 'rpse': None,
                 'wbed_total': None,
+                'wavereg_loss': float(wavereg_stats.get('wavereg_loss', 0.0)) if wavereg_stats else None,
+                'fftreg_loss': float(fftreg_stats.get('fftreg_loss', 0.0)) if fftreg_stats else None,
+                'fftreg_time_ms': fftreg_time_ms,
             }
+            log_data.update(wavereg_stats)
+            log_data.update(fftreg_stats)
             csv_logger.log(log_data)
 
             if cfg.use_wandb and _HAS_WANDB:
-                wandb.log({
+                wb = {
                     'loss_D': loss_D.item(),
                     'loss_G': loss_G.item(),
                     'grad_norm_D': grad_norm_D,
                     'grad_norm_G': grad_norm_G,
                     'sec_per_iter': iter_time,
                     'vram_peak_mb': vram_peak,
-                }, step=step)
+                }
+                if wavereg_stats:
+                    wb.update(wavereg_stats)
+                if fftreg_stats:
+                    wb.update(fftreg_stats)
+                if fftreg_time_ms is not None:
+                    wb['fftreg_time_ms'] = fftreg_time_ms
+                wandb.log(wb, step=step)
+
+            if getattr(cfg, 'use_fftreg', False) and getattr(cfg, 'lambda_fftreg', 0.0) > 0 and fftreg_stats:
+                print(f"    fftreg: loss={fftreg_stats.get('fftreg_loss', 0.0):.6f} "
+                      f"time={fftreg_time_ms if fftreg_time_ms is not None else float('nan'):.2f}ms "
+                      f"(bins={getattr(cfg, 'fftreg_num_bins', 16)}, downsample={getattr(cfg, 'fftreg_downsample_to', 64)}, "
+                      f"apply_to={getattr(cfg, 'fftreg_apply_to', 'g')}, lambda={getattr(cfg, 'lambda_fftreg', 0.0)})")
 
             print(f"[{step:06d}/{cfg.steps}] D:{loss_D.item():.4f} G:{loss_G.item():.4f} "
                   f"gD:{grad_norm_D:.2f} gG:{grad_norm_G:.2f} "

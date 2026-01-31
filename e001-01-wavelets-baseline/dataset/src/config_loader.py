@@ -48,6 +48,24 @@ class RunConfig:
     r1_lambda: float = 10.0
     r1_every: int = 16
 
+    # --- Wavelet-energy matching regularization (optional) ---
+    # Dopasowanie statystyk energii pasm DWT (LL/LH/HL/HH) pomiędzy real i fake.
+    use_wavereg: bool = False
+    lambda_wavereg: float = 0.0
+    # gdzie dodać karę: "g" | "d" | "both"
+    wavereg_apply_to: str = "g"
+    wavereg_wavelet: str = "haar"  # haar | db2
+    wavereg_eps: float = 1e-8
+
+    # --- Fourier (FFT) energy matching regularization (baseline, optional) ---
+    use_fftreg: bool = False
+    lambda_fftreg: float = 0.0
+    fftreg_apply_to: str = "g"  # g | d | both
+    fftreg_num_bins: int = 16
+    fftreg_downsample_to: int = 64
+    fftreg_every: int = 1
+    fftreg_eps: float = 1e-8
+
     # Logging
     log_every: int = 1
     grid_every: int = 1000

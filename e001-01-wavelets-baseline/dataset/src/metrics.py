@@ -490,3 +490,73 @@ def compute_all_spectral_metrics(real_folder: str, fake_folder: str,
     print(f"  WBED total: {wbed_results['wbed_total']:.6f}")
 
     return results
+
+
+def compute_fft_radial_bin_energies_per_image(
+    imgs: torch.Tensor,
+    num_bins: int = 16,
+    downsample_to: Optional[int] = 64,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Per-image radial bin energies z FFT power spectrum.
+
+    Dla każdego obrazu liczy widmo mocy (|FFT|^2), uśrednia po kanałach,
+    wykonuje radial binning i zwraca energie w binach dla każdego elementu batcha.
+
+    Args:
+        imgs: Tensor [B,C,H,W] (zakres [-1,1] lub [0,1])
+        num_bins: liczba binów radialnych
+        downsample_to: jeśli nie-None, to obraz jest bilinearnie zmniejszany do downsample_to x downsample_to
+                       (żeby koszt FFT był porównywalny do wavelet reg)
+        eps: mała stała stabilizująca (np. przy normalizacji)
+
+    Returns:
+        Tensor [B, num_bins] z energiami w binach (mean power w binie)
+    """
+    import torch.nn.functional as F
+
+    B, C, H, W = imgs.shape
+    device = imgs.device
+
+    x = imgs
+    if downsample_to is not None and (H != downsample_to or W != downsample_to):
+        x = F.interpolate(x, size=(downsample_to, downsample_to), mode='bilinear', align_corners=False)
+
+    # FFT per-image/per-channel
+    fft = torch.fft.fft2(x, norm='ortho')
+    fft_shifted = torch.fft.fftshift(fft, dim=(-2, -1))
+    power = (fft_shifted.real ** 2 + fft_shifted.imag ** 2)  # [B,C,h,w]
+
+    # uśrednij po kanałach -> [B,h,w]
+    power = power.mean(dim=1)
+
+    h, w = power.shape[-2:]
+    cy, cx = h // 2, w // 2
+
+    # radius map [h,w]
+    yy = torch.arange(h, device=device, dtype=torch.float32) - cy
+    xx = torch.arange(w, device=device, dtype=torch.float32) - cx
+    Y, X = torch.meshgrid(yy, xx, indexing='ij')
+    radius = torch.sqrt(X ** 2 + Y ** 2)  # [h,w]
+
+    max_radius = min(cy, cx)
+    bin_edges = torch.linspace(0, max_radius, num_bins + 1, device=device)
+
+    # policz mean power per bin per image
+    energies = torch.zeros((B, num_bins), device=device, dtype=power.dtype)
+
+    # (opcjonalnie) normalizacja, żeby kara nie zależała od globalnej skali
+    # tu: normalizujemy sumą energii per image
+    power_flat = power.reshape(B, -1)
+    norm = power_flat.sum(dim=1, keepdim=True).clamp_min(eps)
+    power = power / norm.view(B, 1, 1)
+
+    for i in range(num_bins):
+        mask = (radius >= bin_edges[i]) & (radius < bin_edges[i + 1])
+        if mask.any():
+            vals = power[:, mask]  # [B, n_pix]
+            energies[:, i] = vals.mean(dim=1)
+
+    return energies
+
