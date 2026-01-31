@@ -3,3 +3,9 @@
 # === PATHS ===
 out_dir: "/kaggle/working/artifacts"
 data_dir: "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
+
+# === DISCRIMINATOR: WAVELET BRANCH ===
+use_wavelet_branch: false
+wavelet_hf_only: false
+wavelet_type: "haar"   # haar | db2
+wavelet_level: 1

@@ -31,6 +31,12 @@ class RunConfig:
     g_ch: int = 64
     d_ch: int = 64
 
+    # Discriminator wavelet branch (optional)
+    use_wavelet_branch: bool = False
+    wavelet_hf_only: bool = False
+    wavelet_type: str = "haar"  # haar | db2
+    wavelet_level: int = 1
+
     # EMA
     ema_decay: float = 0.999
 
@@ -53,6 +59,13 @@ class RunConfig:
     # Evaluation
     eval_samples: int = 50000
     fid_samples: int = 10000
+
+    # --- Spectral / wavelet metrics (RPSE, WBED) ---
+    # Uwaga: te metryki są dużo tańsze niż FID/KID, ale nadal warto limitować liczbę obrazów.
+    spectral_metrics: bool = True
+    spectral_max_images: int = 1000
+    spectral_img_size: Optional[int] = None  # np. 128; None = bez resize
+    wbed_wavelet: str = "haar"  # haar | db2
 
     # Dataset
     dataset_name: str = "celeba"  # celeba, cifar10, cifar100, mnist, fashion_mnist

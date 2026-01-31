@@ -123,13 +123,116 @@ class ResBlockD(nn.Module):
         return h + self.skip(x)
 
 
+class WaveletBranch(nn.Module):
+    """Osobny model/gałąź przetwarzająca cechy falkowe (DWT + conv+SN+LeakyReLU)."""
+
+    def __init__(
+        self,
+        *,
+        img_channels: int,
+        out_ch: int,
+        hf_only: bool = False,
+        wavelet_type: str = "haar",
+        wavelet_level: int = 1,
+    ):
+        super().__init__()
+
+        from .wavelets import DWT2D, split_subbands
+
+        if wavelet_level < 1:
+            raise ValueError("wavelet_level musi być >= 1")
+        if wavelet_type not in ("haar", "db2"):
+            raise ValueError(f"Nieznany wavelet_type={wavelet_type}. Dozwolone: haar, db2")
+
+        self.img_channels = img_channels
+        self.hf_only = hf_only
+        self.wavelet_type = wavelet_type
+        self.wavelet_level = wavelet_level
+
+        self._split_subbands = split_subbands
+        self.dwt = DWT2D(wavelet=wavelet_type)
+
+        in_ch = img_channels * (3 if hf_only else 4)
+
+        # 3 bloki conv+SN+LeakyReLU (bez dodatkowego downsamplingu)
+        self.net = nn.Sequential(
+            spectral_norm(nn.Conv2d(in_ch, out_ch, 3, 1, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(out_ch, out_ch, 3, 1, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(out_ch, out_ch, 3, 1, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+    def _dwt_multilevel(self, x: torch.Tensor) -> torch.Tensor:
+        coeffs = x
+        for i in range(self.wavelet_level):
+            coeffs = self.dwt(coeffs)
+            if i < self.wavelet_level - 1:
+                # kolejne poziomy liczone na LL
+                C_prev = coeffs.shape[1] // 4
+                LL, _, _, _ = self._split_subbands(coeffs, C=C_prev)
+                coeffs = LL
+        return coeffs
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        coeffs = self._dwt_multilevel(x)
+        C = self.img_channels
+        LL, LH, HL, HH = self._split_subbands(coeffs, C=C)
+        if self.hf_only:
+            w_in = torch.cat([LH, HL, HH], dim=1)
+        else:
+            w_in = torch.cat([LL, LH, HL, HH], dim=1)
+        return self.net(w_in)
+
+
+class WaveletFusion(nn.Module):
+    """Concat(main, wavelet) + 1x1 conv (SN) do fuzji cech."""
+
+    def __init__(self, *, main_ch: int, wavelet_ch: int, out_ch: int):
+        super().__init__()
+        self.fuse = spectral_norm(nn.Conv2d(main_ch + wavelet_ch, out_ch, 1, 1, 0))
+
+    def forward(self, main: torch.Tensor, wavelet: torch.Tensor) -> torch.Tensor:
+        H = min(main.shape[2], wavelet.shape[2])
+        W = min(main.shape[3], wavelet.shape[3])
+        main = main[:, :, :H, :W]
+        wavelet = wavelet[:, :, :H, :W]
+        return self.fuse(torch.cat([main, wavelet], dim=1))
+
+
 class Discriminator(nn.Module):
     """ResNet Discriminator z SpectralNorm - dynamiczny rozmiar obrazu."""
 
-    def __init__(self, ch: int = 64, img_channels: int = 3, img_size: int = 128):
+    def __init__(
+        self,
+        ch: int = 64,
+        img_channels: int = 3,
+        img_size: int = 128,
+        *,
+        use_wavelet_branch: bool = False,
+        wavelet_hf_only: bool = False,
+        wavelet_type: str = "haar",
+        wavelet_level: int = 1,
+    ):
         super().__init__()
         self.ch = ch
         self.img_size = img_size
+        self.img_channels = img_channels
+
+        self.use_wavelet_branch = use_wavelet_branch
+
+        if self.use_wavelet_branch:
+            wb_ch = ch
+            self.wavelet_branch = WaveletBranch(
+                img_channels=img_channels,
+                out_ch=wb_ch,
+                hf_only=wavelet_hf_only,
+                wavelet_type=wavelet_type,
+                wavelet_level=wavelet_level,
+            )
+            # main: BxC x (H/2) x (W/2), wavelet: Bxwb_ch x H' x W'
+            self.wavelet_fusion = WaveletFusion(main_ch=img_channels, wavelet_ch=wb_ch, out_ch=img_channels)
 
         # Oblicz liczbę bloków downsampling
         self.n_blocks = int(math.log2(img_size)) - 2  # -> do 4x4
@@ -154,6 +257,12 @@ class Discriminator(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = x
+
+        if self.use_wavelet_branch:
+            h_main = F.avg_pool2d(h, 2)
+            h_w = self.wavelet_branch(h)
+            h = self.wavelet_fusion(h_main, h_w)
+
         for block in self.blocks:
             h = block(h)
 

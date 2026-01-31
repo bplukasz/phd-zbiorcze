@@ -42,3 +42,10 @@ fid_samples: 2048
 # === PATHS ===
 # CIFAR-10 pobiera się automatycznie, data_dir używany jako cache
 data_dir: "/tmp/cifar10"
+
+
+# === DISCRIMINATOR: WAVELET BRANCH ===
+use_wavelet_branch: true
+wavelet_hf_only: true
+wavelet_type: "haar"   # haar | db2
+wavelet_level: 1

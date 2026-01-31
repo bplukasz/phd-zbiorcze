@@ -4,7 +4,7 @@ Opis: ResNet GAN baseline z hinge loss, SpectralNorm, EMA, DiffAugment.
       Training pipeline dla CelebA 128x128.
 """
 
-print("WERSJA 30.01.2026-01")
+print("WERSJA 31.01.2026-02")
 
 import os
 import time
@@ -138,7 +138,15 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     # Models
     G = Generator(z_dim=cfg.z_dim, ch=cfg.g_ch, img_channels=cfg.img_channels, img_size=cfg.img_size).to(device)
-    D = Discriminator(ch=cfg.d_ch, img_channels=cfg.img_channels, img_size=cfg.img_size).to(device)
+    D = Discriminator(
+        ch=cfg.d_ch,
+        img_channels=cfg.img_channels,
+        img_size=cfg.img_size,
+        use_wavelet_branch=getattr(cfg, 'use_wavelet_branch', False),
+        wavelet_hf_only=getattr(cfg, 'wavelet_hf_only', False),
+        wavelet_type=getattr(cfg, 'wavelet_type', 'haar'),
+        wavelet_level=getattr(cfg, 'wavelet_level', 1),
+    ).to(device)
     G_ema = EMA(G, decay=cfg.ema_decay)
 
     # Optimizers
@@ -183,8 +191,12 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     # Logging
     csv_logger = CSVLogger(
         os.path.join(cfg.out_dir, "logs.csv"),
-        fieldnames=['step', 'loss_D', 'loss_G', 'grad_norm_D', 'grad_norm_G',
-                    'sec_per_iter', 'vram_peak_mb', 'fid', 'kid']
+        fieldnames=[
+            'step', 'loss_D', 'loss_G', 'grad_norm_D', 'grad_norm_G',
+            'sec_per_iter', 'vram_peak_mb',
+            'fid', 'kid',
+            'rpse', 'wbed_total',
+        ]
     )
 
     # W&B
@@ -282,6 +294,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 'vram_peak_mb': vram_peak,
                 'fid': None,
                 'kid': None,
+                'rpse': None,
+                'wbed_total': None,
             }
             csv_logger.log(log_data)
 
@@ -354,7 +368,47 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             print(f"     (2/2) Obliczanie metryk FID/KID...")
             metrics = compute_fid_kid(real_samples_dir, eval_samples_dir, cfg.fid_samples)
             current_fid = metrics['fid']
-            print(f"  -> FID: {current_fid:.2f}, KID: {metrics['kid']:.4f}")
+            current_kid = metrics['kid']
+            print(f"  -> FID: {current_fid:.2f}, KID: {current_kid:.4f}")
+
+            # Spectral metrics (RPSE + WBED)
+            rpse_val = None
+            wbed_total = None
+            if getattr(cfg, 'spectral_metrics', True):
+                try:
+                    max_imgs = int(getattr(cfg, 'spectral_max_images', 1000))
+                    img_size = getattr(cfg, 'spectral_img_size', None)
+                    wavelet = getattr(cfg, 'wbed_wavelet', 'haar')
+
+                    print(f"     (extra) Obliczanie metryk spektralnych (RPSE/WBED) na max_images={max_imgs}...")
+                    spectral = compute_all_spectral_metrics(
+                        real_folder=real_samples_dir,
+                        fake_folder=eval_samples_dir,
+                        max_images=max_imgs,
+                        num_bins=None,
+                        wavelet=wavelet,
+                        img_size=img_size,
+                        device=str(device),
+                    )
+                    rpse_val = spectral.get('rpse')
+                    wbed_total = spectral.get('wbed_total')
+                except Exception as e:
+                    print(f"     ✗ Nie udało się policzyć RPSE/WBED: {e}")
+
+            # Log evaluation row to CSV
+            csv_logger.log({
+                'step': step,
+                'loss_D': loss_D.item(),
+                'loss_G': loss_G.item(),
+                'grad_norm_D': grad_norm_D,
+                'grad_norm_G': grad_norm_G,
+                'sec_per_iter': iter_time,
+                'vram_peak_mb': vram_peak,
+                'fid': current_fid,
+                'kid': current_kid,
+                'rpse': rpse_val,
+                'wbed_total': wbed_total,
+            })
 
             # Track best FID
             if current_fid < best_fid:
@@ -363,7 +417,7 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 print(f"  ✓ Nowy najlepszy FID! (poprawa: {improvement:.2f})")
 
             if cfg.use_wandb and _HAS_WANDB:
-                wandb.log({'fid': metrics['fid'], 'kid': metrics['kid']}, step=step)
+                wandb.log({'fid': current_fid, 'kid': current_kid, 'rpse': rpse_val, 'wbed_total': wbed_total}, step=step)
 
     # ==================== Final ====================
     total_time = time.time() - t0
@@ -410,4 +464,3 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     print("=" * 60)
 
     return G_ema.shadow, losses_G
-

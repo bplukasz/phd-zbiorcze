@@ -67,7 +67,7 @@ if os.path.exists(CELEBA_DIR):
 # - "preview": 200 kroków, szybki test
 # - "smoke": 500 kroków, weryfikacja pipeline
 # - "train": pełny trening (30k kroków)
-PROFILE = "fast"
+PROFILE = "fast-e13"
 
 # Opcjonalne nadpisania konfiguracji:
 # UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, ustaw use_wandb: False
@@ -366,7 +366,7 @@ if __name__ == "__main__":
     # - "training": pełny trening GAN
     # - "wavelet_tests": testy DWT2D/IDWT2D
     # - "spectral_metrics": testy metryk RPSE i WBED
-    MODE = "spectral_metrics"
+    MODE = "training"
 
     if MODE == "training":
         run_training()
