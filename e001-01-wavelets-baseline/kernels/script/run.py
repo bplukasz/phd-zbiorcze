@@ -67,7 +67,7 @@ if os.path.exists(CELEBA_DIR):
 # - "preview": 200 kroków, szybki test
 # - "smoke": 500 kroków, weryfikacja pipeline
 # - "train": pełny trening (30k kroków)
-PROFILE = "fast-e13"
+PROFILE = "fast-e13-base"
 
 # Opcjonalne nadpisania konfiguracji:
 # UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, ustaw use_wandb: False

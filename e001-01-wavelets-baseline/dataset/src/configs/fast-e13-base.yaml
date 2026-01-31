@@ -2,7 +2,7 @@
 # Szybkie prototypowanie z CIFAR-10 (32x32)
 # ~4-8x szybciej niż CelebA 128x128
 
-name: "fast-e13"
+name: "fast-e13-base"
 
 # === DATASET ===
 # CIFAR-10: 32x32 RGB, 50k obrazów, pobiera się automatycznie
@@ -45,7 +45,7 @@ data_dir: "/tmp/cifar10"
 
 
 # === DISCRIMINATOR: WAVELET BRANCH ===
-use_wavelet_branch: true
-wavelet_hf_only: true
+use_wavelet_branch: false
+wavelet_hf_only: false
 wavelet_type: "haar"   # haar | db2
 wavelet_level: 1
