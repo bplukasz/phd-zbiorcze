@@ -240,23 +240,25 @@ def idwt2d(coeffs: torch.Tensor, wavelet: WaveletName = 'haar',
     return IDWT2D(wavelet).to(coeffs.device)(coeffs, output_size)
 
 
-def split_subbands(coeffs: torch.Tensor, C: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def split_subbands(coeffs: torch.Tensor, C: int):
     """
     Rozdziela tensor współczynników na osobne podpasma.
 
-    Args:
-        coeffs: Tensor BxC*4xH'xW'
-        C: Liczba oryginalnych kanałów
-
-    Returns:
-        Tuple (LL, LH, HL, HH) - każdy o kształcie BxCxH'xW'
+    UWAGA: DWT2D zwraca kanały w kolejności per-kanał:
+      [LL0, LH0, HL0, HH0,  LL1, LH1, HL1, HH1, ...]
     """
-    return (
-        coeffs[:, 0*C:1*C, :, :],
-        coeffs[:, 1*C:2*C, :, :],
-        coeffs[:, 2*C:3*C, :, :],
-        coeffs[:, 3*C:4*C, :, :],
-    )
+    B, C4, Hc, Wc = coeffs.shape
+    if C4 != 4 * C:
+        raise ValueError(f"split_subbands: expected {4*C} channels, got {C4}")
+
+    # (B, 4C, Hc, Wc) -> (B, C, 4, Hc, Wc)
+    coeffs = coeffs.reshape(B, C, 4, Hc, Wc)
+
+    LL = coeffs[:, :, 0, :, :]
+    LH = coeffs[:, :, 1, :, :]
+    HL = coeffs[:, :, 2, :, :]
+    HH = coeffs[:, :, 3, :, :]
+    return LL, LH, HL, HH
 
 
 # ============================================================================

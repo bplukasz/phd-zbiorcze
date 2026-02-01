@@ -187,17 +187,21 @@ class WaveletBranch(nn.Module):
 
 
 class WaveletFusion(nn.Module):
-    """Concat(main, wavelet) + 1x1 conv (SN) do fuzji cech."""
-
     def __init__(self, *, main_ch: int, wavelet_ch: int, out_ch: int):
         super().__init__()
         self.fuse = spectral_norm(nn.Conv2d(main_ch + wavelet_ch, out_ch, 1, 1, 0))
 
     def forward(self, main: torch.Tensor, wavelet: torch.Tensor) -> torch.Tensor:
-        H = min(main.shape[2], wavelet.shape[2])
-        W = min(main.shape[3], wavelet.shape[3])
-        main = main[:, :, :H, :W]
+        # Dopasuj wavelet do rozmiaru main (bez przycinania main)
+        H, W = main.shape[2], main.shape[3]
+
+        # Jeśli wavelet jest większy (np. db2 potrafi dać +1), przytnij wavelet
         wavelet = wavelet[:, :, :H, :W]
+
+        # Jeśli wavelet jest mniejszy (np. wavelet_level>1), doup-sampluj wavelet
+        if wavelet.shape[2] != H or wavelet.shape[3] != W:
+            wavelet = F.interpolate(wavelet, size=(H, W), mode="nearest")
+
         return self.fuse(torch.cat([main, wavelet], dim=1))
 
 
@@ -219,11 +223,22 @@ class Discriminator(nn.Module):
         self.ch = ch
         self.img_size = img_size
         self.img_channels = img_channels
-
         self.use_wavelet_branch = use_wavelet_branch
 
+        # Oblicz liczbę bloków downsampling: np. 32 -> 16 -> 8 -> 4 (3 bloki)
+        self.n_blocks = int(math.log2(img_size)) - 2
+
+        # Channel multipliers
+        ch_mults = [1, 2, 4, 8, 16, 16]
+
+        # --- (B) STEM / pierwszy blok ---
+        # Ten blok robi: img -> ch i downsample do H/2.
+        out_ch0 = ch * ch_mults[0]  # = ch
+        self.block0 = ResBlockD(img_channels, out_ch0, downsample=True, first=True)
+
+        # --- Wavelet branch + fuzja w przestrzeni CECH (nie RGB) ---
         if self.use_wavelet_branch:
-            wb_ch = ch
+            wb_ch = ch  # wavelet_branch też zwraca ch kanałów
             self.wavelet_branch = WaveletBranch(
                 img_channels=img_channels,
                 out_ch=wb_ch,
@@ -231,22 +246,18 @@ class Discriminator(nn.Module):
                 wavelet_type=wavelet_type,
                 wavelet_level=wavelet_level,
             )
-            # main: BxC x (H/2) x (W/2), wavelet: Bxwb_ch x H' x W'
-            self.wavelet_fusion = WaveletFusion(main_ch=img_channels, wavelet_ch=wb_ch, out_ch=img_channels)
+            # Fuzja: (main feat ch) + (wavelet feat ch) -> ch
+            self.wavelet_fusion = WaveletFusion(main_ch=out_ch0, wavelet_ch=wb_ch, out_ch=out_ch0)
 
-        # Oblicz liczbę bloków downsampling
-        self.n_blocks = int(math.log2(img_size)) - 2  # -> do 4x4
-
-        # Channel multipliers
-        ch_mults = [1, 2, 4, 8, 16, 16]
-
+        # --- Reszta bloków (startuje już od kanałów = ch) ---
         blocks = []
-        in_ch = img_channels
+        in_ch = out_ch0
 
-        for i in range(self.n_blocks):
+        # Kolejne bloki downsample (od i=1 do n_blocks-1)
+        for i in range(1, self.n_blocks):
             out_mult = ch_mults[min(i, len(ch_mults) - 1)]
             out_ch = ch * out_mult
-            blocks.append(ResBlockD(in_ch, out_ch, downsample=True, first=(i == 0)))
+            blocks.append(ResBlockD(in_ch, out_ch, downsample=True, first=False))
             in_ch = out_ch
 
         # Ostatni blok bez downsamplingu
@@ -256,13 +267,15 @@ class Discriminator(nn.Module):
         self.fc = spectral_norm(nn.Linear(ch * 16, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = x
+        # (B) Najpierw “normalny” pierwszy blok D (downsample do H/2)
+        h = self.block0(x)
 
+        # (B) Dopiero teraz dokładamy wavelet-features i robimy fuzję w CECHACH
         if self.use_wavelet_branch:
-            h_main = F.avg_pool2d(h, 2)
-            h_w = self.wavelet_branch(h)
-            h = self.wavelet_fusion(h_main, h_w)
+            h_w = self.wavelet_branch(x)          # też ~H/2
+            h = self.wavelet_fusion(h, h_w)       # wynik ma ch kanałów
 
+        # Reszta dyskryminatora
         for block in self.blocks:
             h = block(h)
 

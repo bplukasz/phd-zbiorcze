@@ -1,0 +1,58 @@
+# Profil: fast
+# Szybkie prototypowanie z CIFAR-10 (32x32)
+# ~4-8x szybciej niż CelebA 128x128
+
+name: "fast-e13-wavereg"
+
+# === DATASET ===
+# CIFAR-10: 32x32 RGB, 50k obrazów, pobiera się automatycznie
+dataset_name: "cifar10"
+img_size: 32
+img_channels: 3
+
+# === MODEL ===
+# Mniejszy model dla mniejszych obrazów (32x32 wymaga 3 bloków zamiast 5)
+z_dim: 128
+g_ch: 64
+d_ch: 64
+
+# === TRAINING ===
+steps: 10000
+batch_size: 64  # ten sam batch co train dla porównywalnej prędkości/iter
+
+# Szybszy learning rate dla mniejszego modelu
+lr_D: 0.0001
+lr_G: 0.0002
+
+# === REGULARIZATION ===
+use_r1_penalty: false  # wyłączone dla szybkości
+
+# === LOGGING ===
+log_every: 100
+grid_every: 500
+ckpt_every: 10000
+eval_every: 1000
+live: false
+use_wandb: false
+
+# === EVALUATION ===
+eval_samples: 1000
+fid_samples: 2048
+
+# === PATHS ===
+# CIFAR-10 pobiera się automatycznie, data_dir używany jako cache
+data_dir: "/tmp/cifar10"
+
+# === DISCRIMINATOR: WAVELET BRANCH ===
+use_wavelet_branch: true
+wavelet_hf_only: true
+wavelet_type: "haar"   # haar | db2
+wavelet_level: 1
+
+# === WAVELET-ENERGY MATCHING REGULARIZATION ===
+# Dopasowanie statystyk energii pasm DWT (LL/LH/HL/HH) pomiędzy real i fake w treningu.
+use_wavereg: true
+lambda_wavereg: 1.0e-3
+wavereg_apply_to: "both"        # g | d | both
+wavereg_wavelet: "haar"      # haar | db2
+wavereg_eps: 1.0e-8
