@@ -32,7 +32,6 @@ log_every: 10
 viz_every: 100
 ckpt_every: 1000
 live: false
-use_wandb: true
 
 # === PATHS ===
 out_dir: "/kaggle/working/artifacts"
@@ -176,11 +175,11 @@ cfg = get_config("preview", overrides={"steps": 100})
 
 ## ✅ Profile out-of-the-box
 
-| Profil   | Steps | Batch | Live | W&B | Przeznaczenie |
-|----------|-------|-------|------|-----|---------------|
-| preview  | 200   | 16    | ✓    | ✗   | Szybki test w notebooku |
-| smoke    | 500   | 32    | ✗    | ✓   | Weryfikacja pipeline |
-| train    | 5000  | 64    | ✗    | ✓   | Pełny trening |
+| Profil   | Steps | Batch | Live | Przeznaczenie |
+|----------|-------|-------|------|---------------|
+| preview  | 200   | 16    | ✓    | Szybki test w notebooku |
+| smoke    | 500   | 32    | ✗    | Weryfikacja pipeline |
+| train    | 5000  | 64    | ✗    | Pełny trening |
 
 ## 🔧 Dodawanie nowych parametrów
 
@@ -230,30 +229,6 @@ To pozwala dokładnie odtworzyć warunki eksperymentu.
 ✅ **Reproducible** - automatyczne zapisywanie konfiguracji
 ✅ **Skalowalne** - łatwo dodawać nowe parametry i profile
 ✅ **CLI-friendly** - pełna obsługa przez stałe w run.py
-
-## 🔧 Weights & Biases (W&B)
-
-System automatycznie obsługuje W&B logging:
-
-### Włączanie/wyłączanie
-```yaml
-# W configs/base.yaml lub profile:
-use_wandb: true   # włącz
-use_wandb: false  # wyłącz
-```
-
-### Bezpieczna obsługa
-- Jeśli brak API key na Kaggle, system automatycznie wyłączy W&B i kontynuuje trening
-- Nie wymaga ręcznej konfiguracji
-- Loguje automatycznie: loss, config, step
-
-### Użycie z API key
-Jeśli masz API key, dodaj w notebooku Kaggle:
-```python
-import wandb
-wandb.login(key="your_api_key")
-```
-Lub dodaj jako Kaggle Secret.
 
 ## 📖 Dokumentacja
 

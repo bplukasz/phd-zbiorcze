@@ -110,7 +110,7 @@ base.yaml → profile.yaml → CLI overrides
 ```
 
 ### 3 profile out-of-the-box
-- **preview**: 200 kroków, live mode, bez W&B
+- **preview**: 200 kroków, live mode
 - **smoke**: 500 kroków, test pipeline
 - **train**: 5000 kroków, pełny trening
 

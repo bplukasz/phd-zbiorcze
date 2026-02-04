@@ -1,6 +1,5 @@
 torch
 torchvision
 torch-fidelity
-wandb
 pyyaml
 matplotlib

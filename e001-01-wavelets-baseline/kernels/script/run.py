@@ -16,7 +16,6 @@ def install_dependencies():
     """Instaluje wymagane pakiety."""
     packages = [
         "torch-fidelity",  # FID/KID
-        "wandb",           # Weights & Biases logging
     ]
 
     for pkg in packages:
@@ -70,9 +69,7 @@ if os.path.exists(CELEBA_DIR):
 PROFILE = "fast-e13-wavereg"
 
 # Opcjonalne nadpisania konfiguracji:
-# UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, ustaw use_wandb: False
 OVERRIDES = {
-    'use_wandb': False,  # Wyłącz W&B jeśli brak API key
     # 'steps': 10000,
     # 'batch_size': 128,
     # 'eval_every': 5000,
@@ -105,7 +102,6 @@ def run_training():
     print(f"  Steps: {cfg.steps}")
     print(f"  Batch size: {cfg.batch_size}")
     print(f"  LR_G: {cfg.lr_G}")
-    print(f"  W&B: {cfg.use_wandb}")
     print(f"  Eval every: {cfg.eval_every}")
     print()
 
@@ -377,4 +373,3 @@ if __name__ == "__main__":
     else:
         print(f"Nieznany tryb: {MODE}")
         print("Dostępne tryby: 'training', 'wavelet_tests', 'spectral_metrics'")
-

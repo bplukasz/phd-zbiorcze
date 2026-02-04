@@ -76,7 +76,6 @@ class RunConfig:
     ckpt_every: int = 5000
     eval_every: int = 10000
     live: bool = False
-    use_wandb: bool = True
 
     # Evaluation
     eval_samples: int = 50000

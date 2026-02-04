@@ -32,9 +32,7 @@ print(f"CODE_DIR exists: {os.path.exists(CODE_DIR)}")
 PROFILE = "train"
 
 # Opcjonalne nadpisania konfiguracji:
-# UWAGA: Na Kaggle W&B wymaga API key. Jeśli go nie masz, wyłącz:
 OVERRIDES = {
-    # 'use_wandb': False,  # Wyłącz W&B jeśli brak API key
     # 'steps': 10000,
     # 'batch_size': 128,
 }
@@ -54,7 +52,6 @@ if __name__ == "__main__":
     print(f"  Steps: {cfg.steps}")
     print(f"  Batch size: {cfg.batch_size}")
     print(f"  LR: {cfg.lr}")
-    print(f"  W&B: {cfg.use_wandb}")
     print()
 
     # Run training
@@ -65,5 +62,4 @@ if __name__ == "__main__":
     print(f"Final loss: {losses[-1]:.4f}")
     print(f"Artifacts saved to: {cfg.out_dir}")
     print("=" * 60)
-
 

@@ -23,13 +23,6 @@ except Exception:
 
 import matplotlib.pyplot as plt
 
-# Optional: Weights & Biases
-try:
-    import wandb
-    _HAS_WANDB = True
-except ImportError:
-    _HAS_WANDB = False
-
 # Re-export wszystkich potrzebnych komponentów dla zachowania kompatybilności wstecznej
 from .augmentations import DiffAugment, AUGMENT_FNS
 from .models import Generator, Discriminator, EMA, ResBlockG, ResBlockD, spectral_norm
@@ -227,20 +220,6 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         ]
     )
 
-    # W&B
-    if cfg.use_wandb and _HAS_WANDB:
-        try:
-            wandb.init(
-                project="e001-wavelets-baseline",
-                name=cfg.name,
-                config=cfg.__dict__,
-            )
-            print("W&B logging enabled")
-        except Exception as e:
-            print(f"Warning: Could not initialize W&B: {e}")
-            print("Continuing without W&B logging...")
-            cfg.use_wandb = False
-
     # Fixed noise for visualization
     fixed_z = torch.randn(64, cfg.z_dim, device=device)
 
@@ -256,6 +235,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
 
     for step in range(1, cfg.steps + 1):
         iter_start = time.time()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
 
         # Get real data
         try:
@@ -388,6 +369,7 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         losses_G.append(loss_G.item())
 
         # ==================== Logging ====================
+        log_data: Optional[Dict[str, float]] = None
         if cfg.log_every > 0 and step % cfg.log_every == 0:
             log_data = {
                 'step': step,
@@ -407,24 +389,6 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             }
             log_data.update(wavereg_stats)
             log_data.update(fftreg_stats)
-            csv_logger.log(log_data)
-
-            if cfg.use_wandb and _HAS_WANDB:
-                wb = {
-                    'loss_D': loss_D.item(),
-                    'loss_G': loss_G.item(),
-                    'grad_norm_D': grad_norm_D,
-                    'grad_norm_G': grad_norm_G,
-                    'sec_per_iter': iter_time,
-                    'vram_peak_mb': vram_peak,
-                }
-                if wavereg_stats:
-                    wb.update(wavereg_stats)
-                if fftreg_stats:
-                    wb.update(fftreg_stats)
-                if fftreg_time_ms is not None:
-                    wb['fftreg_time_ms'] = fftreg_time_ms
-                wandb.log(wb, step=step)
 
             if getattr(cfg, 'use_fftreg', False) and getattr(cfg, 'lambda_fftreg', 0.0) > 0 and fftreg_stats:
                 print(f"    fftreg: loss={fftreg_stats.get('fftreg_loss', 0.0):.6f} "
@@ -444,9 +408,6 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 fake_grid = (fake_grid + 1) / 2
             grid = make_grid(fake_grid, nrow=8, padding=2)
             save_image(grid, os.path.join(grid_dir, f"grid_{step:06d}.png"))
-
-            if cfg.use_wandb and _HAS_WANDB:
-                wandb.log({"samples": wandb.Image(grid)}, step=step)
 
             if cfg.live and _HAS_IPYTHON:
                 clear_output(wait=True)
@@ -518,15 +479,27 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 except Exception as e:
                     print(f"     ✗ Nie udało się policzyć RPSE/WBED: {e}")
 
-            # Log evaluation row to CSV
-            csv_logger.log({
-                'step': step,
-                'loss_D': loss_D.item(),
-                'loss_G': loss_G.item(),
-                'grad_norm_D': grad_norm_D,
-                'grad_norm_G': grad_norm_G,
-                'sec_per_iter': iter_time,
-                'vram_peak_mb': vram_peak,
+            if log_data is None:
+                log_data = {
+                    'step': step,
+                    'loss_D': loss_D.item(),
+                    'loss_G': loss_G.item(),
+                    'grad_norm_D': grad_norm_D,
+                    'grad_norm_G': grad_norm_G,
+                    'sec_per_iter': iter_time,
+                    'vram_peak_mb': vram_peak,
+                    'fid': None,
+                    'kid': None,
+                    'rpse': None,
+                    'wbed_total': None,
+                    'wavereg_loss': float(wavereg_stats.get('wavereg_loss', 0.0)) if wavereg_stats else None,
+                    'fftreg_loss': float(fftreg_stats.get('fftreg_loss', 0.0)) if fftreg_stats else None,
+                    'fftreg_time_ms': fftreg_time_ms,
+                }
+                log_data.update(wavereg_stats)
+                log_data.update(fftreg_stats)
+
+            log_data.update({
                 'fid': current_fid,
                 'kid': current_kid,
                 'rpse': rpse_val,
@@ -539,8 +512,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                 best_fid = current_fid
                 print(f"  ✓ Nowy najlepszy FID! (poprawa: {improvement:.2f})")
 
-            if cfg.use_wandb and _HAS_WANDB:
-                wandb.log({'fid': current_fid, 'kid': current_kid, 'rpse': rpse_val, 'wbed_total': wbed_total}, step=step)
+        if log_data is not None:
+            csv_logger.log(log_data)
 
     # ==================== Final ====================
     total_time = time.time() - t0
@@ -578,9 +551,6 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             out_dir=final_samples_dir
         )
         print(f"✓ Zapisano {cfg.eval_samples} próbek do: {final_samples_dir}")
-
-    if cfg.use_wandb and _HAS_WANDB:
-        wandb.finish()
 
     print("\n" + "=" * 60)
     print("🎉 EKSPERYMENT ZAKOŃCZONY POMYŚLNIE!")
