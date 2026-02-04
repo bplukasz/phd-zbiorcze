@@ -1,6 +1,10 @@
 # Bazowa konfiguracja dla eksperymentu
 # Te wartości są wspólne dla wszystkich profili i mogą być nadpisane w profilach
 
+# === REPRODUCIBILITY ===
+seed: 42
+deterministic: false
+
 # === TRAINING ===
 steps: 5000
 batch_size: 64

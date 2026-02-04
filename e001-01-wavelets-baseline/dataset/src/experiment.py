@@ -42,6 +42,7 @@ from .losses import (
     fft_energy_matching_loss,
 )
 from .data import get_dataloader
+from .seed import set_seed
 from .metrics import (
     export_real_images,
     generate_samples,
@@ -119,6 +120,10 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         Tuple z modelem (EMA Generator) i historią loss_G
     """
     cfg = get_config(profile, overrides)
+
+    # Reproducibility (seed musi być ustawiony jak najwcześniej)
+    set_seed(int(getattr(cfg, 'seed', 42)), bool(getattr(cfg, 'deterministic', False)))
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"=" * 60)
@@ -165,7 +170,8 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     try:
         dataloader = get_dataloader(
             cfg.data_dir, cfg.img_size, cfg.batch_size,
-            dataset_name=dataset_name, img_channels=cfg.img_channels
+            dataset_name=dataset_name, img_channels=cfg.img_channels,
+            seed=int(getattr(cfg, 'seed', 42)),
         )
     except Exception as e:
         raise RuntimeError(
@@ -210,6 +216,11 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             'wavereg_mu_real_LH', 'wavereg_std_real_LH', 'wavereg_mu_fake_LH', 'wavereg_std_fake_LH',
             'wavereg_mu_real_HL', 'wavereg_std_real_HL', 'wavereg_mu_fake_HL', 'wavereg_std_fake_HL',
             'wavereg_mu_real_HH', 'wavereg_std_real_HH', 'wavereg_mu_fake_HH', 'wavereg_std_fake_HH',
+            # (diff) - dodatkowe statystyki zwracane przez wavelet_energy_matching_loss
+            'wavereg_mu_diff_LL', 'wavereg_std_diff_LL',
+            'wavereg_mu_diff_LH', 'wavereg_std_diff_LH',
+            'wavereg_mu_diff_HL', 'wavereg_std_diff_HL',
+            'wavereg_mu_diff_HH', 'wavereg_std_diff_HH',
             # Fourier (FFT) energy matching regularization
             'fftreg_loss',
             'fftreg_time_ms',

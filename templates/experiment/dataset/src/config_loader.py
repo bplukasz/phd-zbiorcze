@@ -17,6 +17,10 @@ class RunConfig:
     # Metadata
     name: str = "preview"
 
+    # Reproducibility
+    seed: int = 42
+    deterministic: bool = False
+
     # Training
     steps: int = 5000
     batch_size: int = 64

@@ -9,7 +9,8 @@ from torchvision import datasets, transforms
 
 def get_dataloader(data_dir: str, img_size: int, batch_size: int,
                    num_workers: int = 4, dataset_name: str = "celeba",
-                   img_channels: int = 3) -> DataLoader:
+                   img_channels: int = 3,
+                   seed: int = 42) -> DataLoader:
     """
     Tworzy DataLoader dla wybranego datasetu.
 
@@ -20,6 +21,7 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         num_workers: Liczba workerów
         dataset_name: "celeba", "cifar10", "cifar100", "mnist", "fashion_mnist"
         img_channels: Liczba kanałów (3 dla RGB, 1 dla grayscale)
+        seed: Seed do shuffle/workerów (dla powtarzalności)
 
     Returns:
         DataLoader
@@ -67,6 +69,32 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         raise ValueError(f"Nieznany dataset: {dataset_name}. "
                         f"Dostępne: celeba, cifar10, cifar100, mnist, fashion_mnist")
 
+    def _seed_worker(worker_id: int) -> None:
+        # Każdy worker dostaje inny seed, ale deterministycznie od bazowego seeda.
+        worker_seed = (seed + worker_id) % 2**32
+        try:
+            import random
+            random.seed(worker_seed)
+        except Exception:
+            pass
+        try:
+            import numpy as np  # type: ignore
+            np.random.seed(worker_seed)
+        except Exception:
+            pass
+        try:
+            import torch
+            torch.manual_seed(worker_seed)
+        except Exception:
+            pass
+
+    try:
+        import torch
+        g = torch.Generator()
+        g.manual_seed(seed)
+    except Exception:
+        g = None
+
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -74,6 +102,8 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        worker_init_fn=_seed_worker if num_workers and num_workers > 0 else None,
+        generator=g,
     )
 
     print(f"Dataset: {dataset_name}, rozmiar: {len(dataset)}, "

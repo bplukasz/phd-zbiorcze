@@ -288,6 +288,7 @@ def test_dwt_reconstruction(
     device: str = 'cpu',
     save_diff_image: bool = True,
     output_dir: str = '.',
+    seed: int = 42,
 ) -> Dict[str, float]:
     """
     Testuje rekonstrukcję DWT2D -> IDWT2D dla losowych obrazów.
@@ -301,6 +302,7 @@ def test_dwt_reconstruction(
         device: Urządzenie ('cpu' lub 'cuda')
         save_diff_image: Czy zapisywać obraz różnicy
         output_dir: Katalog wyjściowy dla obrazów
+        seed: Seed do generacji danych testowych
 
     Returns:
         Dict z metrykami (psnr, mae)
@@ -315,7 +317,12 @@ def test_dwt_reconstruction(
     print(f"Device: {device}")
 
     # Losowe obrazy w zakresie [0, 1]
-    torch.manual_seed(42)
+    try:
+        from .seed import set_seed
+        set_seed(int(seed), deterministic=False)
+    except Exception:
+        torch.manual_seed(int(seed))
+
     x = torch.rand(batch_size, channels, height, width, device=device)
 
     print(f"\nWejście: shape={x.shape}, min={x.min():.4f}, max={x.max():.4f}")
