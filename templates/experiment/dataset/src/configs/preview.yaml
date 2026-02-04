@@ -12,5 +12,4 @@ log_every: 10
 viz_every: 50
 ckpt_every: 100
 live: true
-use_wandb: false
 

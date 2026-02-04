@@ -33,7 +33,6 @@ grid_every: 500
 ckpt_every: 10000
 eval_every: 1000
 live: false
-use_wandb: false
 
 # === EVALUATION ===
 eval_samples: 1000

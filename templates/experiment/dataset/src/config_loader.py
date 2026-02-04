@@ -31,7 +31,6 @@ class RunConfig:
     viz_every: int = 100
     ckpt_every: int = 1000
     live: bool = False
-    use_wandb: bool = True
 
     # Output
     out_dir: str = "/kaggle/working/artifacts"

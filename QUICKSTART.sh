@@ -39,7 +39,7 @@ echo "   $ cd e001-01-wavelets-baseline && python test_config.py  # testy system
 echo "   $ cd e001-01-wavelets-baseline && python demo_config.py  # demo"
 echo ""
 echo "🎯 Profile dostępne out-of-the-box:"
-echo "   - preview: 200 kroków, live mode, bez W&B"
+echo "   - preview: 200 kroków, live mode"
 echo "   - smoke:   500 kroków, test pipeline"
 echo "   - train:   5k kroków, pełny trening"
 echo ""
