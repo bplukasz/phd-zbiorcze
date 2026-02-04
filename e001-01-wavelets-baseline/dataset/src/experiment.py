@@ -50,55 +50,8 @@ from .metrics import (
     compute_all_spectral_metrics
 )
 from .utils import CSVLogger
-from .config_loader import get_config, ConfigLoader
+from .config_loader import get_config, ConfigLoader, RunConfig
 
-
-# Dla kompatybilności - exportuj wszystko co było w oryginalnym pliku
-__all__ = [
-    # Augmentations
-    'DiffAugment',
-    'AUGMENT_FNS',
-
-    # Models
-    'Generator',
-    'Discriminator',
-    'EMA',
-    'ResBlockG',
-    'ResBlockD',
-    'spectral_norm',
-
-    # Losses
-    'hinge_loss_d',
-    'hinge_loss_g',
-    'r1_penalty',
-    'compute_grad_norm',
-
-    # Data
-    'get_dataloader',
-
-    # Metrics
-    'export_real_images',
-    'generate_samples',
-    'compute_fid_kid',
-    'compute_radial_power_spectrum',
-    'compute_rpse',
-    'load_images_from_folder',
-    'compute_rpse_from_folders',
-    'compute_wavelet_band_energies',
-    'compute_wbed',
-    'compute_wbed_from_folders',
-    'compute_all_spectral_metrics',
-
-    # Utils
-    'CSVLogger',
-
-    # Training
-    'train',
-
-    # Config
-    'get_config',
-    'ConfigLoader',
-]
 
 
 def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) -> Tuple[nn.Module, List[float]]:
@@ -260,29 +213,7 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             export_real_images(dataloader, cfg.fid_samples, real_samples_dir)
 
     # Logging
-    csv_logger = CSVLogger(
-        os.path.join(cfg.out_dir, "logs.csv"),
-        fieldnames=[
-            'step', 'loss_D', 'loss_G', 'grad_norm_D', 'grad_norm_G',
-            'sec_per_iter', 'vram_peak_mb',
-            'fid', 'kid',
-            'rpse', 'wbed_total',
-            # Wavelet-energy matching regularization
-            'wavereg_loss',
-            'wavereg_mu_real_LL', 'wavereg_std_real_LL', 'wavereg_mu_fake_LL', 'wavereg_std_fake_LL',
-            'wavereg_mu_real_LH', 'wavereg_std_real_LH', 'wavereg_mu_fake_LH', 'wavereg_std_fake_LH',
-            'wavereg_mu_real_HL', 'wavereg_std_real_HL', 'wavereg_mu_fake_HL', 'wavereg_std_fake_HL',
-            'wavereg_mu_real_HH', 'wavereg_std_real_HH', 'wavereg_mu_fake_HH', 'wavereg_std_fake_HH',
-            # (diff) - dodatkowe statystyki zwracane przez wavelet_energy_matching_loss
-            'wavereg_mu_diff_LL', 'wavereg_std_diff_LL',
-            'wavereg_mu_diff_LH', 'wavereg_std_diff_LH',
-            'wavereg_mu_diff_HL', 'wavereg_std_diff_HL',
-            'wavereg_mu_diff_HH', 'wavereg_std_diff_HH',
-            # Fourier (FFT) energy matching regularization
-            'fftreg_loss',
-            'fftreg_time_ms',
-        ]
-    )
+    csv_logger = initialize_logger(cfg)
 
     # Fixed noise for visualization
     fixed_z = torch.randn(64, cfg.z_dim, device=device)
@@ -419,36 +350,10 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                   f"t:{iter_time:.3f}s VRAM:{vram_peak:.0f}MB")
 
         # ==================== Sample Grid ====================
-        if cfg.grid_every > 0 and step % cfg.grid_every == 0:
-            G_ema.shadow.eval()
-            with torch.no_grad():
-                fake_grid = G_ema(fixed_z)
-                fake_grid = (fake_grid + 1) / 2
-            grid = make_grid(fake_grid, nrow=8, padding=2)
-            save_image(grid, os.path.join(grid_dir, f"grid_{step:06d}.png"))
-
-            if cfg.live and _HAS_IPYTHON:
-                clear_output(wait=True)
-                plt.figure(figsize=(10, 10))
-                plt.imshow(grid.permute(1, 2, 0).cpu().numpy())
-                plt.axis('off')
-                plt.title(f"Step {step}")
-                plt.show()
-
-            print(f"  -> Saved grid: grid_{step:06d}.png")
+        sample_grid_every_x_steps(G_ema, cfg, fixed_z, grid_dir, step)
 
         # ==================== Checkpoint ====================
-        if cfg.ckpt_every > 0 and step % cfg.ckpt_every == 0:
-            ckpt_path = os.path.join(ckpt_dir, f"ckpt_{step:06d}.pt")
-            torch.save({
-                'step': step,
-                'G': G.state_dict(),
-                'D': D.state_dict(),
-                'G_ema': G_ema.shadow.state_dict(),
-                'opt_G': opt_G.state_dict(),
-                'opt_D': opt_D.state_dict(),
-            }, ckpt_path)
-            print(f"  -> Saved checkpoint: ckpt_{step:06d}.pt")
+        checkpoint_every_x_steps(D, G, G_ema, cfg, ckpt_dir, opt_D, opt_G, step)
 
         # ==================== Evaluation ====================
         if cfg.eval_every > 0 and step % cfg.eval_every == 0:
@@ -533,19 +438,62 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     print(f"Trening zakończony w {total_time:.2f}s ({total_time/60:.1f} min)")
     print(f"Średni czas/iter: {total_time/cfg.steps:.3f}s")
 
-    # Final checkpoint
-    final_ckpt_path = os.path.join(ckpt_dir, "final.pt")
-    torch.save({
-        'step': cfg.steps,
-        'G': G.state_dict(),
-        'D': D.state_dict(),
-        'G_ema': G_ema.shadow.state_dict(),
-        'opt_G': opt_G.state_dict(),
-        'opt_D': opt_D.state_dict(),
-    }, final_ckpt_path)
-    print(f"Zapisano finalny checkpoint: {final_ckpt_path}")
+    final_checkpoint(D, G, G_ema, cfg, ckpt_dir, opt_D, opt_G)
+    final_evaluation(G_ema, cfg, device, samples_dir)
 
-    # Final evaluation
+    print("\n" + "=" * 60)
+    print("🎉 EKSPERYMENT ZAKOŃCZONY POMYŚLNIE!")
+    print("=" * 60)
+
+    return G_ema.shadow, losses_G
+
+
+def initialize_logger(cfg: RunConfig) -> CSVLogger:
+    return CSVLogger(
+        os.path.join(cfg.out_dir, "logs.csv"),
+        fieldnames=[
+            'step', 'loss_D', 'loss_G', 'grad_norm_D', 'grad_norm_G',
+            'sec_per_iter', 'vram_peak_mb',
+            'fid', 'kid',
+            'rpse', 'wbed_total',
+            # Wavelet-energy matching regularization
+            'wavereg_loss',
+            'wavereg_mu_real_LL', 'wavereg_std_real_LL', 'wavereg_mu_fake_LL', 'wavereg_std_fake_LL',
+            'wavereg_mu_real_LH', 'wavereg_std_real_LH', 'wavereg_mu_fake_LH', 'wavereg_std_fake_LH',
+            'wavereg_mu_real_HL', 'wavereg_std_real_HL', 'wavereg_mu_fake_HL', 'wavereg_std_fake_HL',
+            'wavereg_mu_real_HH', 'wavereg_std_real_HH', 'wavereg_mu_fake_HH', 'wavereg_std_fake_HH',
+            # (diff) - dodatkowe statystyki zwracane przez wavelet_energy_matching_loss
+            'wavereg_mu_diff_LL', 'wavereg_std_diff_LL',
+            'wavereg_mu_diff_LH', 'wavereg_std_diff_LH',
+            'wavereg_mu_diff_HL', 'wavereg_std_diff_HL',
+            'wavereg_mu_diff_HH', 'wavereg_std_diff_HH',
+            # Fourier (FFT) energy matching regularization
+            'fftreg_loss',
+            'fftreg_time_ms',
+        ]
+    )
+
+
+def sample_grid_every_x_steps(G_ema: EMA, cfg: RunConfig, fixed_z, grid_dir: str, step: int):
+    if cfg.grid_every > 0 and step % cfg.grid_every == 0:
+        G_ema.shadow.eval()
+        with torch.no_grad():
+            fake_grid = G_ema(fixed_z)
+            fake_grid = (fake_grid + 1) / 2
+        grid = make_grid(fake_grid, nrow=8, padding=2)
+        save_image(grid, os.path.join(grid_dir, f"grid_{step:06d}.png"))
+
+        if cfg.live and _HAS_IPYTHON:
+            clear_output(wait=True)
+            plt.figure(figsize=(10, 10))
+            plt.imshow(grid.permute(1, 2, 0).cpu().numpy())
+            plt.axis('off')
+            plt.title(f"Step {step}")
+            plt.show()
+
+        print(f"  -> Saved grid: grid_{step:06d}.png")
+
+def final_evaluation(G_ema: EMA, cfg: RunConfig, device, samples_dir: str):
     if cfg.eval_every > 0:
         print("\n" + "=" * 60)
         print("FINALNA EWALUACJA")
@@ -564,8 +512,28 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         )
         print(f"✓ Zapisano {cfg.eval_samples} próbek do: {final_samples_dir}")
 
-    print("\n" + "=" * 60)
-    print("🎉 EKSPERYMENT ZAKOŃCZONY POMYŚLNIE!")
-    print("=" * 60)
+def final_checkpoint(D, G, G_ema: EMA, cfg: RunConfig, ckpt_dir: str, opt_D, opt_G):
+    final_ckpt_path = os.path.join(ckpt_dir, "final.pt")
+    torch.save({
+        'step': cfg.steps,
+        'G': G.state_dict(),
+        'D': D.state_dict(),
+        'G_ema': G_ema.shadow.state_dict(),
+        'opt_G': opt_G.state_dict(),
+        'opt_D': opt_D.state_dict(),
+    }, final_ckpt_path)
+    print(f"Zapisano finalny checkpoint: {final_ckpt_path}")
 
-    return G_ema.shadow, losses_G
+def checkpoint_every_x_steps(D, G, G_ema: EMA, cfg: RunConfig, ckpt_dir: str, opt_D, opt_G, step: int):
+    if cfg.ckpt_every > 0 and step % cfg.ckpt_every == 0:
+        ckpt_path = os.path.join(ckpt_dir, f"ckpt_{step:06d}.pt")
+        torch.save({
+            'step': step,
+            'G': G.state_dict(),
+            'D': D.state_dict(),
+            'G_ema': G_ema.shadow.state_dict(),
+            'opt_G': opt_G.state_dict(),
+            'opt_D': opt_D.state_dict(),
+        }, ckpt_path)
+        print(f"  -> Saved checkpoint: ckpt_{step:06d}.pt")
+

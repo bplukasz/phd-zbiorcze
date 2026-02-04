@@ -66,7 +66,7 @@ if os.path.exists(CELEBA_DIR):
 # - "preview": 200 kroków, szybki test
 # - "smoke": 500 kroków, weryfikacja pipeline
 # - "train": pełny trening (30k kroków)
-PROFILE = "fast-e13-wavereg"
+PROFILE = "fast-e13"
 
 # Opcjonalne nadpisania konfiguracji:
 OVERRIDES = {
