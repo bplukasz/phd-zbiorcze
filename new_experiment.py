@@ -54,6 +54,30 @@ def replace_placeholders(content: str, placeholders: Dict[str, str]) -> str:
     return result
 
 
+def write_rendered_file(src_path: Path, dst_path: Path, placeholders: Dict[str, str]) -> None:
+    """
+    Renderuje plik tekstowy z placeholderami i zapisuje go do katalogu docelowego.
+
+    Dla plików .ipynb próbuje dodatkowo sformatować JSON.
+    """
+    with open(src_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    content = replace_placeholders(content, placeholders)
+
+    if src_path.suffix == ".ipynb":
+        try:
+            notebook_data = json.loads(content)
+            with open(dst_path, "w", encoding="utf-8") as f:
+                json.dump(notebook_data, f, indent=1, ensure_ascii=False)
+            return
+        except json.JSONDecodeError:
+            pass
+
+    with open(dst_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
 def copy_template_dir(
     src_dir: Path,
     dst_dir: Path,
@@ -80,28 +104,8 @@ def copy_template_dir(
             # Utwórz katalog docelowy jeśli nie istnieje
             dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Wczytaj zawartość
             try:
-                with open(item, "r", encoding="utf-8") as f:
-                    content = f.read()
-
-                # Zamień placeholdery
-                content = replace_placeholders(content, placeholders)
-
-                # Dla plików .ipynb - dodatkowo parsuj i zapisz JSON
-                if str(item).endswith('.ipynb'):
-                    try:
-                        notebook_data = json.loads(content)
-                        with open(dst_path, "w", encoding="utf-8") as f:
-                            json.dump(notebook_data, f, indent=1, ensure_ascii=False)
-                    except json.JSONDecodeError:
-                        # Jeśli nie da się sparsować, zapisz surowy tekst
-                        with open(dst_path, "w", encoding="utf-8") as f:
-                            f.write(content)
-                else:
-                    # Zapisz do pliku docelowego
-                    with open(dst_path, "w", encoding="utf-8") as f:
-                        f.write(content)
+                write_rendered_file(item, dst_path, placeholders)
 
                 # Ustaw bit wykonalności jeśli potrzeba
                 if any(str(rel_path).endswith(pattern) for pattern in make_executable):
@@ -273,4 +277,3 @@ Przykłady:
 
 if __name__ == "__main__":
     main()
-

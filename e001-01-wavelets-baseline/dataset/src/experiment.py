@@ -114,6 +114,70 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
     """
     cfg = get_config(profile, overrides)
 
+    def maybe_apply_wavereg(target: str, real_imgs: torch.Tensor, fake_imgs: torch.Tensor):
+        if not getattr(cfg, 'use_wavereg', False) or getattr(cfg, 'lambda_wavereg', 0.0) <= 0:
+            return None, {}
+        apply_to = str(getattr(cfg, 'wavereg_apply_to', 'g')).lower()
+        if target not in apply_to and apply_to != "both":
+            return None, {}
+        reg, reg_logs = wavelet_energy_matching_loss(
+            real_imgs=real_imgs,
+            fake_imgs=fake_imgs,
+            wavelet=str(getattr(cfg, 'wavereg_wavelet', 'haar')),
+            eps=float(getattr(cfg, 'wavereg_eps', 1e-8)),
+        )
+        return reg, reg_logs
+
+    def maybe_apply_fftreg(target: str, real_imgs: torch.Tensor, fake_imgs: torch.Tensor, step: int):
+        if not getattr(cfg, 'use_fftreg', False) or getattr(cfg, 'lambda_fftreg', 0.0) <= 0:
+            return None, {}, None
+        if step % int(getattr(cfg, 'fftreg_every', 1)) != 0:
+            return None, {}, None
+        apply_to = str(getattr(cfg, 'fftreg_apply_to', 'g')).lower()
+        if target not in apply_to and apply_to != "both":
+            return None, {}, None
+        t_reg0 = time.time()
+        reg, reg_logs = fft_energy_matching_loss(
+            real_imgs=real_imgs,
+            fake_imgs=fake_imgs,
+            num_bins=int(getattr(cfg, 'fftreg_num_bins', 16)),
+            downsample_to=int(getattr(cfg, 'fftreg_downsample_to', 64)),
+            eps=float(getattr(cfg, 'fftreg_eps', 1e-8)),
+        )
+        return reg, reg_logs, (time.time() - t_reg0) * 1000.0
+
+    def build_log_data(
+        step: int,
+        loss_D: torch.Tensor,
+        loss_G: torch.Tensor,
+        grad_norm_D: float,
+        grad_norm_G: float,
+        iter_time: float,
+        vram_peak: float,
+        wavereg_stats: Dict[str, float],
+        fftreg_stats: Dict[str, float],
+        fftreg_time_ms: Optional[float],
+    ) -> Dict[str, float]:
+        log_data = {
+            'step': step,
+            'loss_D': loss_D.item(),
+            'loss_G': loss_G.item(),
+            'grad_norm_D': grad_norm_D,
+            'grad_norm_G': grad_norm_G,
+            'sec_per_iter': iter_time,
+            'vram_peak_mb': vram_peak,
+            'fid': None,
+            'kid': None,
+            'rpse': None,
+            'wbed_total': None,
+            'wavereg_loss': float(wavereg_stats.get('wavereg_loss', 0.0)) if wavereg_stats else None,
+            'fftreg_loss': float(fftreg_stats.get('fftreg_loss', 0.0)) if fftreg_stats else None,
+            'fftreg_time_ms': fftreg_time_ms,
+        }
+        log_data.update(wavereg_stats)
+        log_data.update(fftreg_stats)
+        return log_data
+
     # Reproducibility (seed musi być ustawiony jak najwcześniej)
     set_seed(int(getattr(cfg, 'seed', 42)), bool(getattr(cfg, 'deterministic', False)))
 
@@ -268,39 +332,19 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         loss_D = hinge_loss_d(real_logits, fake_logits)
 
         # Wavelet-energy matching regularization (optional)
-        if getattr(cfg, 'use_wavereg', False) and getattr(cfg, 'lambda_wavereg', 0.0) > 0:
-            apply_to = str(getattr(cfg, 'wavereg_apply_to', 'g')).lower()
-            if apply_to in ('d', 'both'):
-                reg, reg_logs = wavelet_energy_matching_loss(
-                    real_imgs=real_imgs,
-                    fake_imgs=fake_imgs,
-                    wavelet=str(getattr(cfg, 'wavereg_wavelet', 'haar')),
-                    eps=float(getattr(cfg, 'wavereg_eps', 1e-8)),
-                )
-                wavereg_loss_val = reg
-                wavereg_stats.update(reg_logs)
-                loss_D = loss_D + float(cfg.lambda_wavereg) * reg
+        reg, reg_logs = maybe_apply_wavereg("d", real_imgs, fake_imgs)
+        if reg is not None:
+            wavereg_loss_val = reg
+            wavereg_stats.update(reg_logs)
+            loss_D = loss_D + float(cfg.lambda_wavereg) * reg
 
         # Fourier (FFT) energy matching regularization (optional baseline)
-        if (
-            getattr(cfg, 'use_fftreg', False)
-            and getattr(cfg, 'lambda_fftreg', 0.0) > 0
-            and (step % int(getattr(cfg, 'fftreg_every', 1)) == 0)
-        ):
-            apply_to = str(getattr(cfg, 'fftreg_apply_to', 'g')).lower()
-            if apply_to in ('d', 'both'):
-                t_reg0 = time.time()
-                reg, reg_logs = fft_energy_matching_loss(
-                    real_imgs=real_imgs,
-                    fake_imgs=fake_imgs,
-                    num_bins=int(getattr(cfg, 'fftreg_num_bins', 16)),
-                    downsample_to=int(getattr(cfg, 'fftreg_downsample_to', 64)),
-                    eps=float(getattr(cfg, 'fftreg_eps', 1e-8)),
-                )
-                fftreg_time_ms = (time.time() - t_reg0) * 1000.0
-                fftreg_loss_val = reg
-                fftreg_stats.update(reg_logs)
-                loss_D = loss_D + float(cfg.lambda_fftreg) * reg
+        reg, reg_logs, reg_time_ms = maybe_apply_fftreg("d", real_imgs, fake_imgs, step)
+        if reg is not None:
+            fftreg_time_ms = reg_time_ms
+            fftreg_loss_val = reg
+            fftreg_stats.update(reg_logs)
+            loss_D = loss_D + float(cfg.lambda_fftreg) * reg
 
         # R1 gradient penalty (optional, costly but stabilizing)
         if cfg.use_r1_penalty and step % cfg.r1_every == 0:
@@ -322,39 +366,19 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         loss_G = hinge_loss_g(fake_logits)
 
         # Wavelet-energy matching regularization (optional)
-        if getattr(cfg, 'use_wavereg', False) and getattr(cfg, 'lambda_wavereg', 0.0) > 0:
-            apply_to = str(getattr(cfg, 'wavereg_apply_to', 'g')).lower()
-            if apply_to in ('g', 'both'):
-                reg, reg_logs = wavelet_energy_matching_loss(
-                    real_imgs=real_imgs,
-                    fake_imgs=fake_imgs,
-                    wavelet=str(getattr(cfg, 'wavereg_wavelet', 'haar')),
-                    eps=float(getattr(cfg, 'wavereg_eps', 1e-8)),
-                )
-                wavereg_loss_val = reg
-                wavereg_stats.update(reg_logs)
-                loss_G = loss_G + float(cfg.lambda_wavereg) * reg
+        reg, reg_logs = maybe_apply_wavereg("g", real_imgs, fake_imgs)
+        if reg is not None:
+            wavereg_loss_val = reg
+            wavereg_stats.update(reg_logs)
+            loss_G = loss_G + float(cfg.lambda_wavereg) * reg
 
         # Fourier (FFT) energy matching regularization (optional baseline)
-        if (
-            getattr(cfg, 'use_fftreg', False)
-            and getattr(cfg, 'lambda_fftreg', 0.0) > 0
-            and (step % int(getattr(cfg, 'fftreg_every', 1)) == 0)
-        ):
-            apply_to = str(getattr(cfg, 'fftreg_apply_to', 'g')).lower()
-            if apply_to in ('g', 'both'):
-                t_reg0 = time.time()
-                reg, reg_logs = fft_energy_matching_loss(
-                    real_imgs=real_imgs,
-                    fake_imgs=fake_imgs,
-                    num_bins=int(getattr(cfg, 'fftreg_num_bins', 16)),
-                    downsample_to=int(getattr(cfg, 'fftreg_downsample_to', 64)),
-                    eps=float(getattr(cfg, 'fftreg_eps', 1e-8)),
-                )
-                fftreg_time_ms = (time.time() - t_reg0) * 1000.0
-                fftreg_loss_val = reg
-                fftreg_stats.update(reg_logs)
-                loss_G = loss_G + float(cfg.lambda_fftreg) * reg
+        reg, reg_logs, reg_time_ms = maybe_apply_fftreg("g", real_imgs, fake_imgs, step)
+        if reg is not None:
+            fftreg_time_ms = reg_time_ms
+            fftreg_loss_val = reg
+            fftreg_stats.update(reg_logs)
+            loss_G = loss_G + float(cfg.lambda_fftreg) * reg
 
         loss_G.backward()
         grad_norm_G = compute_grad_norm(G)
@@ -371,24 +395,18 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
         # ==================== Logging ====================
         log_data: Optional[Dict[str, float]] = None
         if cfg.log_every > 0 and step % cfg.log_every == 0:
-            log_data = {
-                'step': step,
-                'loss_D': loss_D.item(),
-                'loss_G': loss_G.item(),
-                'grad_norm_D': grad_norm_D,
-                'grad_norm_G': grad_norm_G,
-                'sec_per_iter': iter_time,
-                'vram_peak_mb': vram_peak,
-                'fid': None,
-                'kid': None,
-                'rpse': None,
-                'wbed_total': None,
-                'wavereg_loss': float(wavereg_stats.get('wavereg_loss', 0.0)) if wavereg_stats else None,
-                'fftreg_loss': float(fftreg_stats.get('fftreg_loss', 0.0)) if fftreg_stats else None,
-                'fftreg_time_ms': fftreg_time_ms,
-            }
-            log_data.update(wavereg_stats)
-            log_data.update(fftreg_stats)
+            log_data = build_log_data(
+                step,
+                loss_D,
+                loss_G,
+                grad_norm_D,
+                grad_norm_G,
+                iter_time,
+                vram_peak,
+                wavereg_stats,
+                fftreg_stats,
+                fftreg_time_ms,
+            )
 
             if getattr(cfg, 'use_fftreg', False) and getattr(cfg, 'lambda_fftreg', 0.0) > 0 and fftreg_stats:
                 print(f"    fftreg: loss={fftreg_stats.get('fftreg_loss', 0.0):.6f} "
@@ -480,24 +498,18 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
                     print(f"     ✗ Nie udało się policzyć RPSE/WBED: {e}")
 
             if log_data is None:
-                log_data = {
-                    'step': step,
-                    'loss_D': loss_D.item(),
-                    'loss_G': loss_G.item(),
-                    'grad_norm_D': grad_norm_D,
-                    'grad_norm_G': grad_norm_G,
-                    'sec_per_iter': iter_time,
-                    'vram_peak_mb': vram_peak,
-                    'fid': None,
-                    'kid': None,
-                    'rpse': None,
-                    'wbed_total': None,
-                    'wavereg_loss': float(wavereg_stats.get('wavereg_loss', 0.0)) if wavereg_stats else None,
-                    'fftreg_loss': float(fftreg_stats.get('fftreg_loss', 0.0)) if fftreg_stats else None,
-                    'fftreg_time_ms': fftreg_time_ms,
-                }
-                log_data.update(wavereg_stats)
-                log_data.update(fftreg_stats)
+                log_data = build_log_data(
+                    step,
+                    loss_D,
+                    loss_G,
+                    grad_norm_D,
+                    grad_norm_G,
+                    iter_time,
+                    vram_peak,
+                    wavereg_stats,
+                    fftreg_stats,
+                    fftreg_time_ms,
+                )
 
             log_data.update({
                 'fid': current_fid,
