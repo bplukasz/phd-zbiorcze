@@ -1,5 +1,7 @@
-"""
-DiffAugment - Differentiable Augmentation for Data-Efficient GAN Training
+"""Differentiable augmentation utilities.
+
+DiffAugment - Differentiable Augmentation for Data-Efficient GAN Training.
+Przydatne dla GANów i innych generative models.
 """
 
 import torch
@@ -7,7 +9,17 @@ import torch.nn.functional as F
 
 
 def DiffAugment(x: torch.Tensor, policy: str = '') -> torch.Tensor:
-    """Differentiable Augmentation for Data-Efficient GAN Training."""
+    """
+    Stosuje Differentiable Augmentation zgodnie z podaną polityką.
+
+    Args:
+        x: Tensor obrazów [B, C, H, W]
+        policy: String z polityką augmentacji (np. 'color,translation,cutout')
+                Dostępne: 'color', 'translation', 'cutout'
+
+    Returns:
+        Augmentowany tensor w zakresie [-1, 1]
+    """
     if policy:
         for p in policy.split(','):
             for f in AUGMENT_FNS[p]:
@@ -17,23 +29,27 @@ def DiffAugment(x: torch.Tensor, policy: str = '') -> torch.Tensor:
 
 
 def rand_brightness(x: torch.Tensor) -> torch.Tensor:
+    """Losowa zmiana jasności."""
     x = x + (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) - 0.5)
     return x
 
 
 def rand_saturation(x: torch.Tensor) -> torch.Tensor:
+    """Losowa zmiana nasycenia."""
     x_mean = x.mean(dim=1, keepdim=True)
     x = (x - x_mean) * (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) * 2) + x_mean
     return x
 
 
 def rand_contrast(x: torch.Tensor) -> torch.Tensor:
+    """Losowa zmiana kontrastu."""
     x_mean = x.mean(dim=[1, 2, 3], keepdim=True)
     x = (x - x_mean) * (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) + 0.5) + x_mean
     return x
 
 
 def rand_translation(x: torch.Tensor, ratio: float = 0.125) -> torch.Tensor:
+    """Losowe przesunięcie obrazu."""
     shift_x, shift_y = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
     translation_x = torch.randint(-shift_x, shift_x + 1, size=[x.size(0), 1, 1], device=x.device)
     translation_y = torch.randint(-shift_y, shift_y + 1, size=[x.size(0), 1, 1], device=x.device)
@@ -51,6 +67,7 @@ def rand_translation(x: torch.Tensor, ratio: float = 0.125) -> torch.Tensor:
 
 
 def rand_cutout(x: torch.Tensor, ratio: float = 0.5) -> torch.Tensor:
+    """Losowe wycięcie fragmentu obrazu (cutout)."""
     cutout_size = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
     offset_x = torch.randint(0, x.size(2) + (1 - cutout_size[0] % 2), size=[x.size(0), 1, 1], device=x.device)
     offset_y = torch.randint(0, x.size(3) + (1 - cutout_size[1] % 2), size=[x.size(0), 1, 1], device=x.device)
@@ -68,8 +85,10 @@ def rand_cutout(x: torch.Tensor, ratio: float = 0.5) -> torch.Tensor:
     return x
 
 
+# Mapa polityk augmentacji na funkcje
 AUGMENT_FNS = {
     'color': [rand_brightness, rand_saturation, rand_contrast],
     'translation': [rand_translation],
     'cutout': [rand_cutout],
 }
+

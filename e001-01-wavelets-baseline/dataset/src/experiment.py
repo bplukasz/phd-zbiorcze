@@ -23,33 +23,29 @@ except Exception:
 
 import matplotlib.pyplot as plt
 
-# Re-export wszystkich potrzebnych komponentów dla zachowania kompatybilności wstecznej
-from .augmentations import DiffAugment, AUGMENT_FNS
-from .models import Generator, Discriminator, EMA, ResBlockG, ResBlockD, spectral_norm
-from .losses import (
+# Import z shared-lib utils (kod przeniesiony do wspólnej biblioteki)
+from utils import (
+    DiffAugment,
+    AUGMENT_FNS,
     hinge_loss_d,
     hinge_loss_g,
     r1_penalty,
     compute_grad_norm,
-    wavelet_energy_matching_loss,
-    fft_energy_matching_loss,
-)
-from .data import get_dataloader
-from .seed import set_seed
-from .metrics import (
+    set_seed,
     export_real_images,
     generate_samples,
     compute_fid_kid,
-    compute_radial_power_spectrum,
-    compute_rpse,
     load_images_from_folder,
-    compute_rpse_from_folders,
-    compute_wavelet_band_energies,
-    compute_wbed,
-    compute_wbed_from_folders,
-    compute_all_spectral_metrics
+    CSVLogger,
 )
-from .utils import CSVLogger
+
+# Import lokalny - specyficzne dla tego eksperymentu
+from .data import get_dataloader
+from .models import Generator, Discriminator, EMA, ResBlockG, ResBlockD, spectral_norm
+from .losses import (
+    wavelet_energy_matching_loss,
+    fft_energy_matching_loss,
+)
 from .config_loader import get_config, ConfigLoader, RunConfig
 
 
@@ -493,6 +489,7 @@ def sample_grid_every_x_steps(G_ema: EMA, cfg: RunConfig, fixed_z, grid_dir: str
 
         print(f"  -> Saved grid: grid_{step:06d}.png")
 
+
 def final_evaluation(G_ema: EMA, cfg: RunConfig, device, samples_dir: str):
     if cfg.eval_every > 0:
         print("\n" + "=" * 60)
@@ -512,6 +509,7 @@ def final_evaluation(G_ema: EMA, cfg: RunConfig, device, samples_dir: str):
         )
         print(f"✓ Zapisano {cfg.eval_samples} próbek do: {final_samples_dir}")
 
+
 def final_checkpoint(D, G, G_ema: EMA, cfg: RunConfig, ckpt_dir: str, opt_D, opt_G):
     final_ckpt_path = os.path.join(ckpt_dir, "final.pt")
     torch.save({
@@ -523,6 +521,7 @@ def final_checkpoint(D, G, G_ema: EMA, cfg: RunConfig, ckpt_dir: str, opt_D, opt
         'opt_D': opt_D.state_dict(),
     }, final_ckpt_path)
     print(f"Zapisano finalny checkpoint: {final_ckpt_path}")
+
 
 def checkpoint_every_x_steps(D, G, G_ema: EMA, cfg: RunConfig, ckpt_dir: str, opt_D, opt_G, step: int):
     if cfg.ckpt_every > 0 and step % cfg.ckpt_every == 0:

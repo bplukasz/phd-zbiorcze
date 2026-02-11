@@ -1,6 +1,6 @@
 """Utilities for reproducibility (seeding).
 
-Trzymamy to w osobnym pliku, żeby było łatwo reużyć w kernelach/testach.
+Moduł do zarządzania seedami i zapewnienia reprodukowalności eksperymentów.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import random
 
 @dataclass(frozen=True)
 class SeedConfig:
+    """Konfiguracja seeda dla eksperymentu."""
     seed: int = 42
     deterministic: bool = False
 
@@ -21,8 +22,13 @@ class SeedConfig:
 def set_seed(seed: int, deterministic: bool = False) -> None:
     """Ustawia seed dla random/numpy/torch.
 
-    Uwaga: deterministyczność na GPU nie zawsze jest 100% możliwa.
-    Jeśli `deterministic=True`, PyTorch może rzucić wyjątek na niedeterministycznych operacjach.
+    Args:
+        seed: Wartość seeda
+        deterministic: Czy wymuszać deterministyczne operacje (może wpłynąć na wydajność)
+
+    Uwaga:
+        Deterministyczność na GPU nie zawsze jest 100% możliwa.
+        Jeśli `deterministic=True`, PyTorch może rzucić wyjątek na niedeterministycznych operacjach.
     """
 
     # Python
@@ -63,3 +69,4 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
     except Exception:
         # Torch nie jest dostępny w jakimś kontekście importu
         pass
+

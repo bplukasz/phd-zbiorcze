@@ -32,27 +32,27 @@ print("=" * 60)
 print("e001-01-wavelets-baseline - Script Runner")
 print("=" * 60)
 
-# Instaluj zależności
-print("Instalowanie zależności...")
-install_dependencies()
-
 # ============================================================================
-# Paths setup
+# Paths setup - MUSI BYĆ PRZED INSTALACJĄ I IMPORTAMI!
 # ============================================================================
 
 print("\nInputs:", os.listdir("/kaggle/input"))
 
 CODE_DIR = "/kaggle/input/e001-01-wavelets-baseline-lib"
-sys.path.insert(0, CODE_DIR)
-
 SHARED_DIR = "/kaggle/input/shared-lib"
+
+# Dodaj do sys.path PRZED jakimikolwiek importami z src
+sys.path.insert(0, CODE_DIR)
 sys.path.insert(0, SHARED_DIR)
+
+# Instaluj zależności
+print("Instalowanie zależności...")
+install_dependencies()
 
 # Verify paths
 print(f"CODE_DIR exists: {os.path.exists(CODE_DIR)}")
 print(f"SHARED_DIR exists: {os.path.exists(SHARED_DIR)}")
 
-# Check CelebA dataset
 CELEBA_DIR = "/kaggle/input/celeba-dataset"
 print(f"CelebA exists: {os.path.exists(CELEBA_DIR)}")
 if os.path.exists(CELEBA_DIR):
@@ -81,16 +81,20 @@ OVERRIDES = {
 
 from src import train, get_config
 from src.wavelets import run_all_tests
-from src.experiment import (
+
+# Import metryk spektralnych (specyficzne dla eksperymentu)
+from src.metrics import (
     compute_radial_power_spectrum,
     compute_rpse,
     compute_wavelet_band_energies,
     compute_wbed,
-    load_images_from_folder,
     compute_rpse_from_folders,
     compute_wbed_from_folders,
     compute_all_spectral_metrics,
 )
+
+# Import ogólnych utilities z shared-lib
+from utils import load_images_from_folder
 
 
 def run_training():
