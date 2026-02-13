@@ -1,0 +1,36 @@
+run:
+  name: cifar10_drop_seed0
+  seed: 0
+  outdir: /kaggle/working/runs
+
+data:
+  dataset: cifar10
+  root: /kaggle/working/data
+  resolution: 32
+  batch_size: 128
+  num_workers: 2
+  drop_clusters: [7, 12]    # ustawisz po precompute_real (K=50)
+  drop_fraction: 1.0
+
+model:
+  z_dim: 128
+  g_ch: 128
+  d_ch: 128
+  spectral_norm: true
+
+train:
+  steps: 120000
+  n_critic: 1
+  lr_g: 0.0002
+  lr_d: 0.0002
+  betas: [0.0, 0.9]
+  ema:
+    enabled: true
+    beta: 0.999
+
+log:
+  sample_every: 1000
+  ckpt_every: 5000
+  eval_every: 10000
+  n_eval_fake: 10000
+

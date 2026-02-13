@@ -1,0 +1,36 @@
+run:
+  name: cifar10_baseline_seed0
+  seed: 0
+  outdir: /kaggle/working/runs
+
+data:
+  dataset: cifar10
+  root: /kaggle/working/data
+  resolution: 32
+  batch_size: 128
+  num_workers: 2
+  drop_clusters: []
+  drop_fraction: 0.0
+
+model:
+  z_dim: 128
+  g_ch: 128
+  d_ch: 128
+  spectral_norm: true
+
+train:
+  steps: 200 #200000
+  n_critic: 1
+  lr_g: 0.0002
+  lr_d: 0.0002
+  betas: [0.0, 0.9]
+  ema:
+    enabled: true
+    beta: 0.999
+
+log:
+  sample_every: 100 #1000
+  ckpt_every: 5000
+  eval_every: 100 #10000
+  n_eval_fake: 100 #10000
+

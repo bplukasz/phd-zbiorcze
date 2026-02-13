@@ -1,0 +1,20 @@
+run:
+  name: e11_precompute_cifar10
+  seed: 0
+  outdir: /kaggle/working/e11_cache
+
+data:
+  dataset: cifar10
+  root: /kaggle/working/data
+  resolution: 32
+  batch_size: 256
+  num_workers: 2
+
+e11:
+  clip_model: ViT-B-32
+  clip_pretrained: openai
+  K_list: [20, 50, 100]
+  kmeans_max_iter: 300
+  min_cluster_size: 200
+  save_real_clip_features: true   # zapisuje (N,512) float16
+

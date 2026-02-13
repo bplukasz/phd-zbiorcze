@@ -1,0 +1,45 @@
+run:
+  name: e11_eval_cifar10
+  seed: 0
+  outdir: /kaggle/working/e11_results
+
+data:
+  dataset: cifar10
+  root: /kaggle/working/data
+  resolution: 32
+  batch_size: 256
+  num_workers: 2
+
+model:
+  z_dim: 128
+  g_ch: 128
+
+e11:
+  cache_dir: /kaggle/working/e11_cache
+  clip_model: ViT-B-32
+  clip_pretrained: openai
+
+  K_list: [20, 50, 100]
+  min_cluster_size: 200
+
+  n_fake: 20000
+  assignment: hard   # hard | topM
+  topM: 2000         # używane jeśli assignment=topM
+
+  kid:
+    enabled: true
+    subsets: 50
+    subset_size: 1000
+    degree: 3
+    gamma: null
+    coef0: 1.0
+
+  coverage:
+    enabled: true
+    max_real_per_cluster: 2000
+    max_fake_per_cluster: 2000
+    threshold_percentile: 10
+    chunk: 512
+
+  aggregates: [mean_w, worst, tail10]
+
