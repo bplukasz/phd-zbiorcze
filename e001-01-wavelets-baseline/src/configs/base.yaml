@@ -6,8 +6,10 @@ seed: 42
 deterministic: false
 
 # === PATHS ===
-out_dir: "/kaggle/working/artifacts"
-data_dir: "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
+out_dir: "./artifacts"
+# Ustaw data_dir w profilu lub przez CLI override, np.:
+#   python run.py --profile train --override data_dir=/sciezka/do/danych
+data_dir: ""
 
 # === DISCRIMINATOR: WAVELET BRANCH ===
 use_wavelet_branch: false

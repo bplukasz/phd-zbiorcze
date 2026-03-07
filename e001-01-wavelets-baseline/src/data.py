@@ -3,6 +3,7 @@ Data loading and preprocessing
 """
 
 import os
+import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -83,17 +84,12 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         except Exception:
             pass
         try:
-            import torch
             torch.manual_seed(worker_seed)
         except Exception:
             pass
 
-    try:
-        import torch
-        g = torch.Generator()
-        g.manual_seed(seed)
-    except Exception:
-        g = None
+    g = torch.Generator()
+    g.manual_seed(seed)
 
     dataloader = DataLoader(
         dataset,
@@ -101,6 +97,9 @@ def get_dataloader(data_dir: str, img_size: int, batch_size: int,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
+        pin_memory_device="cuda" if torch.cuda.is_available() else "",
+        persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None,
         drop_last=True,
         worker_init_fn=_seed_worker if num_workers and num_workers > 0 else None,
         generator=g,

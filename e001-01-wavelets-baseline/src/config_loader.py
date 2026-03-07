@@ -92,8 +92,8 @@ class RunConfig:
     dataset_name: str = "celeba"  # celeba, cifar10, cifar100, mnist, fashion_mnist
 
     # Output
-    out_dir: str = "/kaggle/working/artifacts"
-    data_dir: str = "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
+    out_dir: str = "./artifacts"
+    data_dir: str = ""  # must be set via YAML config or CLI override
 
     def update_from_dict(self, updates: Dict[str, Any]) -> None:
         """Aktualizuje konfigurację wartościami ze słownika."""

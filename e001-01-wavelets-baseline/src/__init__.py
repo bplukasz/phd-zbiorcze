@@ -1,12 +1,3 @@
-# Setup sys.path for Kaggle environment BEFORE any imports
-import sys
-import os
-
-# Dodaj shared-lib do sys.path jeśli jeszcze nie ma
-SHARED_DIR = "/kaggle/input/shared-lib"
-if SHARED_DIR not in sys.path and os.path.exists(SHARED_DIR):
-    sys.path.insert(0, SHARED_DIR)
-
 from .config_loader import (
     get_config,
     RunConfig,
@@ -14,8 +5,7 @@ from .config_loader import (
 )
 
 # Import ogólnych funkcji z shared-lib
-# Na Kaggle struktura to: /kaggle/input/shared-lib/utils/ (nie shared/utils/)
-from utils import (
+from shared.utils import (
     DiffAugment,
     hinge_loss_d,
     hinge_loss_g,

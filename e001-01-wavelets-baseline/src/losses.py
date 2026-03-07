@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 
 # Import ogólnych funkcji z shared-lib
-from utils import (
+from shared.utils import (
     hinge_loss_d,
     hinge_loss_g,
     r1_penalty,

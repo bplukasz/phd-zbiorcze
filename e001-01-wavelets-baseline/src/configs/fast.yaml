@@ -17,8 +17,9 @@ g_ch: 64
 d_ch: 64
 
 # === TRAINING ===
-steps: 10000
-batch_size: 64  # ten sam batch co train dla porównywalnej prędkości/iter
+steps: 100000
+# 124 GB VRAM — duży batch żeby wysycić GPU
+batch_size: 124
 
 # Szybszy learning rate dla mniejszego modelu
 lr_D: 0.0001
@@ -29,8 +30,8 @@ use_r1_penalty: false  # wyłączone dla szybkości
 
 # === LOGGING ===
 log_every: 100
-grid_every: 500
-ckpt_every: 10000
+grid_every: 1000
+ckpt_every: 20000
 eval_every: 1000
 live: false
 

@@ -23,8 +23,8 @@ except Exception:
 
 import matplotlib.pyplot as plt
 
-# Import z shared-lib utils (kod przeniesiony do wspólnej biblioteki)
-from utils import (
+# Import z shared-lib utils
+from shared.utils import (
     DiffAugment,
     AUGMENT_FNS,
     hinge_loss_d,
@@ -47,6 +47,7 @@ from .losses import (
     fft_energy_matching_loss,
 )
 from .config_loader import get_config, ConfigLoader, RunConfig
+from .metrics import compute_all_spectral_metrics
 
 
 
@@ -178,6 +179,7 @@ def train(profile: str = "preview", overrides: Optional[Dict[str, Any]] = None) 
             cfg.data_dir, cfg.img_size, cfg.batch_size,
             dataset_name=dataset_name, img_channels=cfg.img_channels,
             seed=int(getattr(cfg, 'seed', 42)),
+            num_workers=min(8, os.cpu_count() or 4),
         )
     except Exception as e:
         raise RuntimeError(

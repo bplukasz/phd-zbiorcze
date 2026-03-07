@@ -1,0 +1,416 @@
+"""
+e001-02-r3gan-baseline — experiment training loop.
+
+Korzysta z architektury R3GAN (r3gan-source.py w korzeniu projektu).
+Produkuje: gridy, checkpointy, real_samples, samples, logi CSV, config_used.yaml.
+"""
+
+import os
+import sys
+import time
+from typing import Any, Dict, Optional, Tuple, cast
+import importlib.util
+from pathlib import Path
+
+import torch
+from torchvision.utils import save_image
+
+# ---- Load local r3gan-source.py reliably ----------------------------------------
+_R3GAN_PATH = Path(__file__).resolve().parents[1] / "r3gan-source.py"
+_R3GAN_SPEC = importlib.util.spec_from_file_location("e001_02_r3gan_source", _R3GAN_PATH)
+if _R3GAN_SPEC is None or _R3GAN_SPEC.loader is None:
+    raise ImportError(f"Could not load R3GAN source module from {_R3GAN_PATH}")
+_r3gan = importlib.util.module_from_spec(_R3GAN_SPEC)
+sys.modules[_R3GAN_SPEC.name] = _r3gan
+_R3GAN_SPEC.loader.exec_module(_r3gan)
+
+R3GANGenerator = _r3gan.R3GANGenerator
+R3GANDiscriminator = _r3gan.R3GANDiscriminator
+R3GANTrainer = _r3gan.R3GANTrainer
+TrainerConfig = _r3gan.TrainerConfig
+build_stage_channels = _r3gan.build_stage_channels
+setup_nvidia_performance = _r3gan.setup_nvidia_performance
+parse_batch = _r3gan.parse_batch
+
+from shared.utils import set_seed, CSVLogger
+
+from .data import get_dataloader
+from .config_loader import RunConfig, ConfigLoader, get_config
+from .gan_metrics import DependencyError, GANMetricsConfig, GANMetricsSuite, format_metrics
+
+
+# --------------------------------------------------------------------------
+
+def _build_models(cfg: RunConfig) -> Tuple[Any, Any]:
+    """Buduje G i D na podstawie konfiguracji."""
+    g_ch = build_stage_channels(cfg.img_resolution, cfg.base_channels, cfg.channel_max)
+    d_ch = list(reversed(g_ch))
+    G = R3GANGenerator(
+        z_dim=cfg.z_dim,
+        img_resolution=cfg.img_resolution,
+        stage_channels=g_ch,
+        blocks_per_stage=cfg.blocks_per_stage,
+        expansion_factor=cfg.expansion_factor,
+        group_size=cfg.group_size,
+        resample_mode=cfg.resample_mode,
+        out_channels=cfg.out_channels,
+    )
+    D = R3GANDiscriminator(
+        img_resolution=cfg.img_resolution,
+        stage_channels=d_ch,
+        blocks_per_stage=cfg.blocks_per_stage,
+        expansion_factor=cfg.expansion_factor,
+        group_size=cfg.group_size,
+        in_channels=cfg.in_channels,
+        resample_mode=cfg.resample_mode,
+    )
+    return G, D
+
+
+def _make_csv_logger(out_dir: str) -> CSVLogger:
+    fieldnames = [
+        "step",
+        "row_type",
+        "d_loss", "d_adv", "r1", "r2",
+        "g_loss",
+        "real_score_mean", "fake_score_mean",
+        "sec_per_iter",
+        "vram_peak_mb",
+        "fid", "kid_mean", "kid_std",
+        "precision", "recall",
+        "lpips_diversity",
+        "metrics_elapsed_sec",
+    ]
+    return CSVLogger(os.path.join(out_dir, "logs.csv"), fieldnames)
+
+
+@torch.no_grad()
+def _save_grid(trainer: R3GANTrainer, fixed_z: torch.Tensor,
+               path: str, n_row: int = 8) -> None:
+    trainer.G_ema.eval()
+    imgs = trainer.G_ema(fixed_z)             # [-1, 1]
+    imgs = (imgs.clamp(-1, 1) + 1.0) / 2.0   # [0, 1]
+    save_image(imgs, path, nrow=n_row)
+
+
+def _save_real_grid(real_imgs: torch.Tensor, path: str, n_row: int = 8) -> None:
+    imgs = (real_imgs.clamp(-1, 1) + 1.0) / 2.0
+    save_image(imgs[:64], path, nrow=n_row)
+
+
+def _export_real_samples(dataloader, n: int, out_dir: str) -> None:
+    """Zapisuje n prawdziwych próbek jako pojedyncze pliki PNG (do FID/KID)."""
+    os.makedirs(out_dir, exist_ok=True)
+    saved = 0
+    for batch in dataloader:
+        imgs, _ = parse_batch(batch)
+        imgs = (imgs.clamp(-1, 1) + 1.0) / 2.0
+        for i in range(imgs.size(0)):
+            if saved >= n:
+                break
+            save_image(imgs[i], os.path.join(out_dir, f"{saved:06d}.png"))
+            saved += 1
+        if saved >= n:
+            break
+    print(f"Exported {saved} real samples → {out_dir}")
+
+
+def _export_samples(trainer: R3GANTrainer, n: int, out_dir: str, step: int) -> None:
+    """Zapisuje n wygenerowanych próbek jako pojedyncze pliki PNG."""
+    os.makedirs(out_dir, exist_ok=True)
+    batch_size = 64
+    saved = 0
+    while saved < n:
+        cur = min(batch_size, n - saved)
+        imgs = trainer.sample(cur)
+        imgs = (imgs.clamp(-1, 1) + 1.0) / 2.0
+        for i in range(imgs.size(0)):
+            save_image(imgs[i], os.path.join(out_dir, f"step{step:07d}_{saved:06d}.png"))
+            saved += 1
+    print(f"Saved {saved} fake samples → {out_dir}")
+
+
+def _validate_metrics_config(cfg: RunConfig, dataset_size: Optional[int]) -> None:
+    if cfg.metrics_every < 0:
+        raise ValueError("metrics_every must be >= 0")
+    if cfg.metrics_every == 0:
+        return
+    if cfg.metrics_num_fake <= 0:
+        raise ValueError("metrics_num_fake must be > 0 when metrics are enabled")
+    if cfg.metrics_fake_batch_size <= 0:
+        raise ValueError("metrics_fake_batch_size must be > 0 when metrics are enabled")
+    if cfg.metrics_pr_num_samples <= cfg.metrics_pr_k:
+        raise ValueError("metrics_pr_num_samples must be greater than metrics_pr_k")
+    if cfg.metrics_lpips_pool_size < 2:
+        raise ValueError("metrics_lpips_pool_size must be >= 2")
+    if cfg.metrics_lpips_num_pairs <= 0:
+        raise ValueError("metrics_lpips_num_pairs must be > 0")
+    if cfg.metrics_amp_dtype not in {"bf16", "fp16"}:
+        raise ValueError("metrics_amp_dtype must be one of: bf16, fp16")
+    if cfg.metrics_kid_subset_size > cfg.metrics_num_fake:
+        raise ValueError("metrics_kid_subset_size cannot be larger than metrics_num_fake")
+    if cfg.metrics_max_real < cfg.metrics_kid_subset_size:
+        raise ValueError("metrics_max_real cannot be smaller than metrics_kid_subset_size")
+    if dataset_size is not None and dataset_size < cfg.metrics_kid_subset_size:
+        raise ValueError(
+            f"Dataset too small for KID subset_size={cfg.metrics_kid_subset_size}. "
+            f"Available real samples: {dataset_size}."
+        )
+
+
+def _build_metrics_suite(cfg: RunConfig, device: torch.device) -> Optional[GANMetricsSuite]:
+    if cfg.metrics_every == 0:
+        return None
+    try:
+        metrics_cfg = GANMetricsConfig(
+            device=str(device),
+            input_range="minus_one_to_one",
+            fid_feature=cfg.metrics_fid_feature,
+            kid_feature=cfg.metrics_kid_feature,
+            kid_subsets=cfg.metrics_kid_subsets,
+            kid_subset_size=cfg.metrics_kid_subset_size,
+            max_real_images_fid_kid=cfg.metrics_max_real,
+            reset_real_features=False,
+            pr_num_samples=cfg.metrics_pr_num_samples,
+            pr_k=cfg.metrics_pr_k,
+            lpips_num_pairs=cfg.metrics_lpips_num_pairs,
+            lpips_pool_size=cfg.metrics_lpips_pool_size,
+            use_amp_for_feature_extractor=(device.type == "cuda"),
+            amp_dtype=cast(Any, cfg.metrics_amp_dtype),
+            use_channels_last=cfg.channels_last,
+            seed=cfg.seed,
+            verbose=True,
+        )
+        return GANMetricsSuite(metrics_cfg)
+    except DependencyError as exc:
+        raise RuntimeError(
+            "GAN metrics are enabled, but required dependencies are missing. "
+            "Install requirements from e001-02-r3gan-baseline/requirements.txt or disable metrics with metrics_every=0."
+        ) from exc
+
+
+# --------------------------------------------------------------------------
+
+def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
+    """Główna funkcja treningowa."""
+    cfg = get_config(profile, overrides)
+
+    # Seed
+    set_seed(cfg.seed, cfg.deterministic)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    setup_nvidia_performance(device)
+
+    print("=" * 60)
+    print("e001-02-r3gan-baseline")
+    print(f"Profile : {cfg.name}")
+    print(f"Device  : {device}" + (f"  [{torch.cuda.get_device_name(0)}]" if device.type == "cuda" else ""))
+    print(f"Dataset : {cfg.dataset_name}  {cfg.img_resolution}×{cfg.img_resolution}")
+    print(f"Steps   : {cfg.steps}")
+    print(f"Metrics : {'enabled' if cfg.metrics_every > 0 else 'disabled'}"
+          + (f"  (every {cfg.metrics_every} steps, fake={cfg.metrics_num_fake})" if cfg.metrics_every > 0 else ""))
+    print("=" * 60)
+
+    # Dirs
+    out_dir   = cfg.out_dir
+    grid_dir  = os.path.join(out_dir, "grids")
+    ckpt_dir  = os.path.join(out_dir, "checkpoints")
+    samp_dir  = os.path.join(out_dir, "samples")
+    real_dir  = os.path.join(out_dir, "real_samples")
+    for d in (out_dir, grid_dir, ckpt_dir, samp_dir, real_dir):
+        os.makedirs(d, exist_ok=True)
+
+    # Save used config immediately
+    ConfigLoader().save_config(cfg, os.path.join(out_dir, "config_used.yaml"))
+
+    # Build models + trainer
+    G, D = _build_models(cfg)
+    train_cfg = TrainerConfig(
+        lr_g=cfg.lr_g,
+        lr_d=cfg.lr_d,
+        betas=tuple(cfg.betas),
+        gamma=cfg.gamma,
+        ema_beta=cfg.ema_beta,
+        use_amp_for_g=cfg.use_amp_for_g,
+        use_amp_for_d=cfg.use_amp_for_d,
+        channels_last=cfg.channels_last,
+        grad_clip=cfg.grad_clip,
+    )
+    trainer = R3GANTrainer(G, D, device=device, train_cfg=train_cfg)
+
+    g_params = sum(p.numel() for p in G.parameters())
+    d_params = sum(p.numel() for p in D.parameters())
+    print(f"G params: {g_params/1e6:.2f}M   D params: {d_params/1e6:.2f}M")
+
+    # Dataloader
+    dataloader = get_dataloader(
+        cfg.data_dir,
+        cfg.img_resolution,
+        cfg.batch_size,
+        dataset_name=cfg.dataset_name,
+        img_channels=cfg.img_channels,
+        seed=cfg.seed,
+        num_workers=min(8, os.cpu_count() or 4),
+    )
+
+    dataset_size = int(len(dataloader.dataset)) if hasattr(dataloader, "dataset") else None
+    _validate_metrics_config(cfg, dataset_size)
+
+    # Sanity check — real grid
+    data_iter = iter(dataloader)
+    first_batch, _ = parse_batch(next(data_iter))
+    print(f"Real data  min={first_batch.min():.3f}  max={first_batch.max():.3f}  mean={first_batch.mean():.3f}")
+    _save_real_grid(first_batch, os.path.join(out_dir, "real_grid.png"))
+    print("Saved real_grid.png — sprawdź czy dane wyglądają OK!")
+
+    # Export real samples (for metrics / FID)
+    print("Eksportuję real_samples…")
+    export_real_n = min(10_000, dataset_size) if dataset_size is not None else 10_000
+    _export_real_samples(dataloader, n=export_real_n, out_dir=real_dir)
+
+    # Prepare GAN metrics once at startup, so long runs fail fast instead of mid-training.
+    metrics_suite = _build_metrics_suite(cfg, device)
+    if metrics_suite is not None:
+        print(f"Przygotowuję GAN metrics cache na real data (max_real={cfg.metrics_max_real}, pr_samples={cfg.metrics_pr_num_samples})…")
+        metrics_suite.prepare_real(dataloader)
+        print("GAN metrics cache ready.")
+
+    # CSV logger
+    csv_logger = _make_csv_logger(out_dir)
+
+    # Fixed latents for grid visualization (always same images)
+    fixed_z = torch.randn(cfg.save_n_samples, G.z_dim, device=device)
+
+    print(f"\nStart training: {cfg.steps} steps  batch={cfg.batch_size}")
+    print("-" * 60)
+
+    for step in range(1, cfg.steps + 1):
+        t_iter = time.time()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+
+        # Fetch data
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
+        images, labels = parse_batch(batch)
+
+        metrics = trainer.train_step(images, labels)
+
+        iter_time = time.time() - t_iter
+        vram_mb = (
+            torch.cuda.max_memory_allocated() / 1e6
+            if device.type == "cuda" else 0.0
+        )
+
+        # --- CSV log ---
+        if step % cfg.log_every == 0:
+            row = {
+                "step": step,
+                "row_type": "train",
+                "d_loss": metrics.get("d_loss", 0.0),
+                "d_adv":  metrics.get("d_adv",  0.0),
+                "r1":     metrics.get("r1",      0.0),
+                "r2":     metrics.get("r2",      0.0),
+                "g_loss": metrics.get("g_loss",  0.0),
+                "real_score_mean": metrics.get("real_score_mean", 0.0),
+                "fake_score_mean": metrics.get("fake_score_mean", 0.0),
+                "sec_per_iter": round(iter_time, 4),
+                "vram_peak_mb": round(vram_mb, 1),
+                "fid": "",
+                "kid_mean": "",
+                "kid_std": "",
+                "precision": "",
+                "recall": "",
+                "lpips_diversity": "",
+                "metrics_elapsed_sec": "",
+            }
+            csv_logger.log(row)
+            print(
+                f"[{step:>7d}/{cfg.steps}]  "
+                f"d={row['d_loss']:.4f}  g={row['g_loss']:.4f}  "
+                f"r1={row['r1']:.4f}  r2={row['r2']:.4f}  "
+                f"{iter_time*1000:.0f}ms"
+                + (f"  {vram_mb:.0f}MB" if device.type == "cuda" else "")
+            )
+
+        # --- Grid ---
+        if step % cfg.grid_every == 0:
+            grid_path = os.path.join(grid_dir, f"grid_{step:07d}.png")
+            _save_grid(trainer, fixed_z, grid_path)
+            print(f"  → grid saved: {grid_path}")
+
+        # --- Checkpoint ---
+        if step % cfg.ckpt_every == 0:
+            ckpt_path = os.path.join(ckpt_dir, f"ckpt_{step:07d}.pt")
+            torch.save({
+                "step": step,
+                "G": trainer.G.state_dict(),
+                "D": trainer.D.state_dict(),
+                "G_ema": trainer.G_ema.state_dict(),
+                "g_opt": trainer.g_opt.state_dict(),
+                "d_opt": trainer.d_opt.state_dict(),
+                "cfg": cfg.to_dict(),
+            }, ckpt_path)
+            print(f"  → checkpoint saved: {ckpt_path}")
+
+            # Also save a few generated samples next to checkpoint
+            _export_samples(trainer, n=256, out_dir=samp_dir, step=step)
+
+        # --- GAN Metrics ---
+        if metrics_suite is not None and cfg.metrics_every > 0 and step % cfg.metrics_every == 0:
+            print(f"\n[{step:>7d}/{cfg.steps}]  Obliczam metryki GAN ({cfg.metrics_num_fake} fake images)…")
+            t_metrics = time.time()
+
+            @torch.no_grad()
+            def _sample_fn(n: int) -> torch.Tensor:
+                return trainer.sample(n)
+
+            gan_metrics = metrics_suite.evaluate_generator(
+                _sample_fn,
+                num_fake_images=cfg.metrics_num_fake,
+                fake_batch_size=cfg.metrics_fake_batch_size,
+            )
+            elapsed_metrics = time.time() - t_metrics
+            print(
+                f"[{step:>7d}/{cfg.steps}]  METRICS  {format_metrics(gan_metrics)}"
+                f"  ({elapsed_metrics:.1f}s)"
+            )
+            # Log metrics to CSV as a separate row
+            metrics_row = {
+                "step": step,
+                "row_type": "gan_metrics",
+                "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "",
+                "real_score_mean": "", "fake_score_mean": "",
+                "sec_per_iter": "", "vram_peak_mb": "",
+                "fid": round(gan_metrics["fid"], 4),
+                "kid_mean": round(gan_metrics["kid_mean"], 6),
+                "kid_std": round(gan_metrics["kid_std"], 6),
+                "precision": round(gan_metrics["precision"], 4),
+                "recall": round(gan_metrics["recall"], 4),
+                "lpips_diversity": round(gan_metrics["lpips_diversity"], 4),
+                "metrics_elapsed_sec": round(elapsed_metrics, 3),
+            }
+            csv_logger.log(metrics_row)
+
+    # --- Final save ---
+    final_ckpt = os.path.join(ckpt_dir, "final.pt")
+    torch.save({
+        "step": cfg.steps,
+        "G": trainer.G.state_dict(),
+        "D": trainer.D.state_dict(),
+        "G_ema": trainer.G_ema.state_dict(),
+        "g_opt": trainer.g_opt.state_dict(),
+        "d_opt": trainer.d_opt.state_dict(),
+        "cfg": cfg.to_dict(),
+    }, final_ckpt)
+    print(f"\nDone! Final checkpoint: {final_ckpt}")
+
+    # Final grid
+    _save_grid(trainer, fixed_z, os.path.join(grid_dir, "grid_final.png"))
+    _export_samples(trainer, n=1024, out_dir=samp_dir, step=cfg.steps)
+
+    return trainer
+

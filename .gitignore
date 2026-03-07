@@ -31,3 +31,5 @@ kaggle.json
 .AppleDouble
 .LSOverride
 
+# Dodano wildcard dla folderów artifacts
+artifacts*/

@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 
 # Import ogólnych funkcji z shared-lib
-from utils import (
+from shared.utils import (
     export_real_images,
     generate_samples,
     compute_fid_kid,

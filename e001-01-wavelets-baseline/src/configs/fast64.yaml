@@ -38,4 +38,4 @@ eval_samples: 25000
 fid_samples: 5000
 
 # === PATHS ===
-data_dir: "/kaggle/input/celeba-dataset/img_align_celeba/img_align_celeba"
+# data_dir: set via CLI override or env var
