@@ -67,16 +67,37 @@ def _build_models(cfg: RunConfig) -> Tuple[Any, Any]:
     return G, D
 
 
+def _step_to_kimg(step: int, batch_size: int) -> float:
+    return (step * batch_size) / 1000.0
+
+
+def _update_fid_auc(
+    prev_point: Optional[Tuple[float, float]],
+    current_kimg: float,
+    current_fid: float,
+    cumulative_auc: float,
+) -> Tuple[Tuple[float, float], float]:
+    if prev_point is None:
+        return (current_kimg, current_fid), 0.0
+    prev_kimg, prev_fid = prev_point
+    delta_kimg = current_kimg - prev_kimg
+    if delta_kimg <= 0:
+        return (current_kimg, current_fid), cumulative_auc
+    cumulative_auc += 0.5 * (prev_fid + current_fid) * delta_kimg
+    return (current_kimg, current_fid), cumulative_auc
+
+
 def _make_csv_logger(out_dir: str) -> CSVLogger:
     fieldnames = [
         "step",
+        "kimg",
         "row_type",
         "d_loss", "d_adv", "r1", "r2",
         "g_loss",
         "real_score_mean", "fake_score_mean",
         "sec_per_iter",
         "vram_peak_mb",
-        "fid", "kid_mean", "kid_std",
+        "fid", "fid_auc_vs_kimg", "kid_mean", "kid_std",
         "precision", "recall",
         "lpips_diversity",
         "metrics_elapsed_sec",
@@ -253,7 +274,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
         num_workers=min(8, os.cpu_count() or 4),
     )
 
-    dataset_size = int(len(dataloader.dataset)) if hasattr(dataloader, "dataset") else None
+    dataset_size = int(len(cast(Any, dataloader.dataset))) if hasattr(dataloader, "dataset") else None
     _validate_metrics_config(cfg, dataset_size)
 
     # Sanity check — real grid
@@ -284,8 +305,12 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
     print(f"\nStart training: {cfg.steps} steps  batch={cfg.batch_size}")
     print("-" * 60)
 
+    prev_fid_point: Optional[Tuple[float, float]] = None
+    fid_auc_vs_kimg = 0.0
+
     for step in range(1, cfg.steps + 1):
         t_iter = time.time()
+        kimg = _step_to_kimg(step, cfg.batch_size)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
 
@@ -309,6 +334,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
         if step % cfg.log_every == 0:
             row = {
                 "step": step,
+                "kimg": round(kimg, 4),
                 "row_type": "train",
                 "d_loss": metrics.get("d_loss", 0.0),
                 "d_adv":  metrics.get("d_adv",  0.0),
@@ -320,6 +346,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "sec_per_iter": round(iter_time, 4),
                 "vram_peak_mb": round(vram_mb, 1),
                 "fid": "",
+                "fid_auc_vs_kimg": "",
                 "kid_mean": "",
                 "kid_std": "",
                 "precision": "",
@@ -374,18 +401,28 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 fake_batch_size=cfg.metrics_fake_batch_size,
             )
             elapsed_metrics = time.time() - t_metrics
+            current_fid = float(gan_metrics["fid"])
+            prev_fid_point, fid_auc_vs_kimg = _update_fid_auc(
+                prev_fid_point,
+                kimg,
+                current_fid,
+                fid_auc_vs_kimg,
+            )
             print(
                 f"[{step:>7d}/{cfg.steps}]  METRICS  {format_metrics(gan_metrics)}"
+                f"  fid_auc_vs_kimg={fid_auc_vs_kimg:.4f}"
                 f"  ({elapsed_metrics:.1f}s)"
             )
             # Log metrics to CSV as a separate row
             metrics_row = {
                 "step": step,
+                "kimg": round(kimg, 4),
                 "row_type": "gan_metrics",
                 "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "",
                 "real_score_mean": "", "fake_score_mean": "",
                 "sec_per_iter": "", "vram_peak_mb": "",
-                "fid": round(gan_metrics["fid"], 4),
+                "fid": round(current_fid, 4),
+                "fid_auc_vs_kimg": round(fid_auc_vs_kimg, 4),
                 "kid_mean": round(gan_metrics["kid_mean"], 6),
                 "kid_std": round(gan_metrics["kid_std"], 6),
                 "precision": round(gan_metrics["precision"], 4),
