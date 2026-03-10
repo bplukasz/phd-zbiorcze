@@ -438,58 +438,229 @@ class R3GANPreset:
         return G, D
 
 
-class WaveReg:
-    """Frequency regularizer based on Haar wavelet HF subbands.
+class WaveletStatRegularizer(nn.Module):
+    """EMA-based wavelet HF statistics regularizer (Etap 6).
 
-    Penalises the L1 distance between HF wavelet coefficients (LH, HL, HH)
-    of the generated image and the real image.  Only added to generator loss.
+    Matches the distribution of high-frequency energy (LH, HL, HH subbands)
+    between fake and real images without requiring paired samples.
 
-    Args:
-        weight:      Scalar multiplier applied to the raw band loss.
-        in_channels: Number of image channels (must match generator output).
+    For each image:
+      - apply 1-level Haar DWT
+      - take LH, HL, HH subbands
+      - compute per-band log-energy: logE = log(mean(coeff^2) + eps)
+
+    Per batch:
+      - mu_fake, std_fake from the batch
+      - mu_real_ema, std_real_ema updated via EMA from the real batch
+
+    Loss:
+      loss = weight * (L1(mu_fake, mu_real_ema) + 0.5 * L1(std_fake, std_real_ema))
+
+    Returns:
+        (loss, metrics_dict)
     """
 
-    def __init__(self, weight: float = 1.0, in_channels: int = 3) -> None:
-        self.weight = weight
-        self._dwt: Optional[FixedHaarDWT2d] = None
-        self._in_channels = in_channels
+    _BANDS: Tuple[str, ...] = ("LH", "HL", "HH")
 
-    def _get_dwt(self, device: torch.device, dtype: torch.dtype) -> FixedHaarDWT2d:
+    def __init__(
+        self,
+        weight: float = 0.02,
+        ema_beta: float = 0.99,
+        eps: float = 1e-8,
+        in_channels: int = 3,
+    ) -> None:
+        super().__init__()
+        self.weight = weight
+        self.ema_beta = ema_beta
+        self.eps = eps
+        self._in_channels = in_channels
+        self._dwt: Optional["FixedHaarDWT2d"] = None  # type: ignore[type-arg]
+
+        # EMA buffers — shape (3,) one entry per band (LH, HL, HH)
+        self.register_buffer("mu_real_ema", torch.zeros(3))
+        self.register_buffer("std_real_ema", torch.ones(3))
+        self.register_buffer("_initialized", torch.tensor(False))
+
+    def _get_dwt(self, device: torch.device, dtype: torch.dtype) -> "FixedHaarDWT2d":
         if self._dwt is None:
             self._dwt = FixedHaarDWT2d(in_channels=self._in_channels)
         return self._dwt.to(device=device, dtype=dtype)
 
-    def __call__(self, fake: Tensor, real: Tensor) -> Tensor:
-        dwt = self._get_dwt(fake.device, fake.dtype)
+    @staticmethod
+    def _band_log_energy(coeff: Tensor, eps: float) -> Tensor:
+        """Return log-energy per image: shape (B,)."""
+        e = coeff.float().pow(2).mean(dim=(1, 2, 3))  # (B,)
+        return torch.log(e + eps)                      # (B,)
+
+    def _compute_stats(self, imgs: Tensor) -> Tuple[Tensor, Tensor]:
+        """Returns (mu, std) tensors of shape (3,), one per HF band."""
+        dwt = self._get_dwt(imgs.device, imgs.dtype)
+        bands = dwt(imgs)
+        mus: List[Tensor] = []
+        stds: List[Tensor] = []
+        for band in self._BANDS:
+            log_e = self._band_log_energy(bands[band], self.eps)  # (B,)
+            mus.append(log_e.mean())
+            stds.append(log_e.std(unbiased=False).clamp(min=self.eps))
+        return torch.stack(mus), torch.stack(stds)  # each (3,)
+
+    def forward(self, fake: Tensor, real: Tensor) -> Tuple[Tensor, Dict[str, float]]:
+        # --- fake stats (differentiable) ---
+        mu_fake, std_fake = self._compute_stats(fake)
+
+        # --- real stats: update EMA buffers (no grad, always kept on CPU) ---
         with torch.no_grad():
-            real_bands = dwt(real.detach())
-        fake_bands = dwt(fake)
-        loss = torch.tensor(0.0, device=fake.device, dtype=fake.dtype)
-        for key in ("LH", "HL", "HH"):
-            loss = loss + (fake_bands[key] - real_bands[key].detach()).abs().mean()
-        return self.weight * loss / 3.0
+            mu_real_batch, std_real_batch = self._compute_stats(real.detach())
+            mu_real_cpu = mu_real_batch.cpu().float()
+            std_real_cpu = std_real_batch.cpu().float()
+            beta = self.ema_beta
+            if not self._initialized.item():  # type: ignore[union-attr]
+                self.mu_real_ema.copy_(mu_real_cpu)    # type: ignore[union-attr]
+                self.std_real_ema.copy_(std_real_cpu)  # type: ignore[union-attr]
+                self._initialized.fill_(True)           # type: ignore[union-attr]
+            else:
+                self.mu_real_ema.mul_(beta).add_(mu_real_cpu, alpha=1.0 - beta)    # type: ignore[union-attr]
+                self.std_real_ema.mul_(beta).add_(std_real_cpu, alpha=1.0 - beta)  # type: ignore[union-attr]
+
+        # Cast EMA buffers to the same device+dtype as mu_fake for loss computation
+        mu_real_ema = self.mu_real_ema.to(device=mu_fake.device, dtype=mu_fake.dtype)   # type: ignore[union-attr]
+        std_real_ema = self.std_real_ema.to(device=std_fake.device, dtype=std_fake.dtype)  # type: ignore[union-attr]
+
+        loss_mu = F.l1_loss(mu_fake, mu_real_ema)
+        loss_std = F.l1_loss(std_fake, std_real_ema)
+        loss = self.weight * (loss_mu + 0.5 * loss_std)
+
+        metrics: Dict[str, float] = {
+            "wave_reg_total": float(loss.detach().cpu()),
+            "wave_mu_loss":   float(loss_mu.detach().cpu()),
+            "wave_std_loss":  float(loss_std.detach().cpu()),
+            "wave_fake_mu_lh": float(mu_fake[0].detach().cpu()),
+            "wave_fake_mu_hl": float(mu_fake[1].detach().cpu()),
+            "wave_fake_mu_hh": float(mu_fake[2].detach().cpu()),
+            "wave_real_mu_lh": float(mu_real_ema[0].cpu()),
+            "wave_real_mu_hl": float(mu_real_ema[1].cpu()),
+            "wave_real_mu_hh": float(mu_real_ema[2].cpu()),
+        }
+        return loss, metrics
 
 
-class FFTReg:
-    """Frequency regularizer based on 2-D FFT amplitude spectrum.
+# Alias for backward-compat with configs / experiment.py
+WaveReg = WaveletStatRegularizer
 
-    Penalises the L1 distance between the log-amplitude spectra of the
-    generated image and the real image.  Only added to generator loss.
 
-    Args:
-        weight: Scalar multiplier applied to the raw spectral loss.
+# ---------------------------------------------------------------------------
+
+class FFTStatRegularizer(nn.Module):
+    """EMA-based FFT radial power-spectrum statistics regularizer (Etap 7).
+
+    Parallel to WaveletStatRegularizer:
+      - FFT2 → power = real² + imag²
+      - radial binning (num_bins bins, DC excluded)
+      - log-energy per bin per image → mu/std per batch
+      - EMA statistics for real images
+      - same L1 loss form
+
+    Returns:
+        (loss, metrics_dict)
     """
 
-    def __init__(self, weight: float = 1.0) -> None:
+    def __init__(
+        self,
+        weight: float = 0.02,
+        ema_beta: float = 0.99,
+        eps: float = 1e-8,
+        num_bins: int = 16,
+    ) -> None:
+        super().__init__()
         self.weight = weight
+        self.ema_beta = ema_beta
+        self.eps = eps
+        self.num_bins = num_bins
 
-    def __call__(self, fake: Tensor, real: Tensor) -> Tensor:
-        # Work in float32 for numerical stability of fft
-        fake_f = torch.fft.rfft2(fake.float(), norm="ortho")
-        real_f = torch.fft.rfft2(real.float().detach(), norm="ortho")
-        fake_amp = torch.log1p(fake_f.abs())
-        real_amp = torch.log1p(real_f.abs())
-        return self.weight * (fake_amp - real_amp).abs().mean()
+        self._bin_map: Optional[Tensor] = None
+        self._bin_map_hw: Optional[Tuple[int, int]] = None
+
+        self.register_buffer("mu_real_ema", torch.zeros(num_bins))
+        self.register_buffer("std_real_ema", torch.ones(num_bins))
+        self.register_buffer("_initialized", torch.tensor(False))
+
+    def _get_bin_map(self, H: int, half_W: int, device: torch.device) -> Tensor:
+        """Build (or return cached) integer radial-bin map of shape (H, half_W).
+
+        Bin 0 = DC component (skipped), bins 1..num_bins used for loss.
+        """
+        if self._bin_map is not None and self._bin_map_hw == (H, half_W):
+            return self._bin_map.to(device)
+
+        fy = torch.fft.fftfreq(H).unsqueeze(1).expand(H, half_W)  # (-0.5 … 0.5)
+        fx = torch.arange(half_W, dtype=torch.float32) / (2 * (half_W - 1))  # 0 … 0.5
+        r = torch.sqrt(fy ** 2 + fx ** 2)  # 0 … ~0.707
+        # Map radius → bin index 0..num_bins (0 = DC / near-DC)
+        bin_map = (r / 0.5 * self.num_bins).long().clamp(0, self.num_bins)
+        self._bin_map = bin_map
+        self._bin_map_hw = (H, half_W)
+        return bin_map.to(device)
+
+    def _compute_stats(self, imgs: Tensor) -> Tuple[Tensor, Tensor]:
+        """Returns (mu, std) of log-power per radial bin, shapes (num_bins,)."""
+        fft = torch.fft.rfft2(imgs.float(), norm="ortho")  # (B, C, H, half_W)
+        B, C, H, half_W = fft.shape
+
+        # Power averaged over channels
+        power = (fft.real ** 2 + fft.imag ** 2).mean(dim=1)  # (B, H, half_W)
+
+        bin_map = self._get_bin_map(H, half_W, imgs.device)  # (H, half_W)
+
+        mus: List[Tensor] = []
+        stds: List[Tensor] = []
+        for b_idx in range(1, self.num_bins + 1):  # skip DC bin 0
+            mask = bin_map == b_idx  # (H, half_W) bool
+            if not mask.any():
+                mus.append(torch.zeros(1, device=imgs.device).squeeze())
+                stds.append(torch.full((), self.eps, device=imgs.device))
+                continue
+            p_bin = power[:, mask]                             # (B, n_pix)
+            log_e = torch.log(p_bin.mean(dim=1) + self.eps)   # (B,)
+            mus.append(log_e.mean())
+            stds.append(log_e.std(unbiased=False).clamp(min=self.eps))
+
+        return torch.stack(mus), torch.stack(stds)  # each (num_bins,)
+
+    def forward(self, fake: Tensor, real: Tensor) -> Tuple[Tensor, Dict[str, float]]:
+        mu_fake, std_fake = self._compute_stats(fake)
+
+        # --- real stats: update EMA buffers (no grad, always kept on CPU) ---
+        with torch.no_grad():
+            mu_real_batch, std_real_batch = self._compute_stats(real.detach())
+            mu_real_cpu = mu_real_batch.cpu().float()
+            std_real_cpu = std_real_batch.cpu().float()
+            beta = self.ema_beta
+            if not self._initialized.item():  # type: ignore[union-attr]
+                self.mu_real_ema.copy_(mu_real_cpu)    # type: ignore[union-attr]
+                self.std_real_ema.copy_(std_real_cpu)  # type: ignore[union-attr]
+                self._initialized.fill_(True)           # type: ignore[union-attr]
+            else:
+                self.mu_real_ema.mul_(beta).add_(mu_real_cpu, alpha=1.0 - beta)    # type: ignore[union-attr]
+                self.std_real_ema.mul_(beta).add_(std_real_cpu, alpha=1.0 - beta)  # type: ignore[union-attr]
+
+        # Cast EMA buffers to the same device+dtype as mu_fake for loss computation
+        mu_real_ema = self.mu_real_ema.to(device=mu_fake.device, dtype=mu_fake.dtype)   # type: ignore[union-attr]
+        std_real_ema = self.std_real_ema.to(device=std_fake.device, dtype=std_fake.dtype)  # type: ignore[union-attr]
+
+        loss_mu = F.l1_loss(mu_fake, mu_real_ema)
+        loss_std = F.l1_loss(std_fake, std_real_ema)
+        loss = self.weight * (loss_mu + 0.5 * loss_std)
+
+        metrics: Dict[str, float] = {
+            "fft_reg_total": float(loss.detach().cpu()),
+            "fft_mu_loss":   float(loss_mu.detach().cpu()),
+            "fft_std_loss":  float(loss_std.detach().cpu()),
+        }
+        return loss, metrics
+
+
+# Alias for backward-compat with configs / experiment.py
+FFTReg = FFTStatRegularizer
 
 
 def zero_centered_gradient_penalty(samples: Tensor, critics: Tensor) -> Tensor:
@@ -647,6 +818,20 @@ class R3GANTrainer:
         z = torch.randn(batch_size, self.G.z_dim, device=self.device)
         real_for_g = real_images if (self.cfg.use_amp_for_g and self.device.type == "cuda") else real_images.float()
 
+        extra_reg_metrics: Dict[str, float] = {}
+
+        def _apply_regs(fake_: Tensor, real_: Tensor) -> Tensor:
+            g_reg_ = torch.tensor(0.0, device=self.device)
+            if self.wave_reg is not None:
+                wave_loss, wave_m = self.wave_reg(fake_, real_)
+                g_reg_ = g_reg_ + wave_loss
+                extra_reg_metrics.update(wave_m)
+            if self.fft_reg is not None:
+                fft_loss, fft_m = self.fft_reg(fake_, real_)
+                g_reg_ = g_reg_ + fft_loss
+                extra_reg_metrics.update(fft_m)
+            return g_reg_
+
         if self.cfg.use_amp_for_g and self.device.type == "cuda":
             with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
                 fake = self.G(z, cond)
@@ -654,13 +839,7 @@ class R3GANTrainer:
                 real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
                 rel = fake_logits - real_logits
                 g_adv = F.softplus(-rel).mean()
-
-                g_reg = torch.tensor(0.0, device=self.device)
-                if self.wave_reg is not None:
-                    g_reg = g_reg + self.wave_reg(fake, real_for_g)
-                if self.fft_reg is not None:
-                    g_reg = g_reg + self.fft_reg(fake, real_for_g)
-
+                g_reg = _apply_regs(fake, real_for_g)
                 g_total = g_adv + g_reg
         else:
             fake = self.G(z, cond)
@@ -668,13 +847,7 @@ class R3GANTrainer:
             real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
             rel = fake_logits - real_logits
             g_adv = F.softplus(-rel).mean()
-
-            g_reg = torch.tensor(0.0, device=self.device)
-            if self.wave_reg is not None:
-                g_reg = g_reg + self.wave_reg(fake, real_for_g)
-            if self.fft_reg is not None:
-                g_reg = g_reg + self.fft_reg(fake, real_for_g)
-
+            g_reg = _apply_regs(fake, real_for_g)
             g_total = g_adv + g_reg
 
         g_total.backward()
@@ -682,13 +855,14 @@ class R3GANTrainer:
             torch.nn.utils.clip_grad_norm_(self.G.parameters(), self.cfg.grad_clip)
         self.g_opt.step()
 
-        g_metrics = {
+        g_metrics: Dict[str, float] = {
             "g_loss": float(g_total.detach().cpu()),
             "g_adv": float(g_adv.detach().cpu()),
             "g_reg": float(g_reg.detach().cpu()),
             "fake_score_mean": float(fake_logits.detach().mean().cpu()),
             "real_score_mean_for_g": float(real_logits.detach().mean().cpu()),
         }
+        g_metrics.update(extra_reg_metrics)
         return g_metrics
 
     def train_step(self, real_images: Tensor, labels: Optional[Tensor] = None) -> Dict[str, float]:
@@ -709,6 +883,7 @@ class R3GANTrainer:
         model = self.G_ema if use_ema else self.G
         model.eval()
         z = torch.randn(num_samples, model.z_dim, device=self.device)
+
         cond = prepare_condition(labels, self.num_classes, num_samples, self.device) if self.num_classes > 0 else None
         return model(z, cond)
 

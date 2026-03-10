@@ -122,6 +122,13 @@ def _make_csv_logger(out_dir: str) -> CSVLogger:
         "real_score_mean", "fake_score_mean",
         "sec_per_iter",
         "vram_peak_mb",
+        # wavelet stat regularizer sub-metrics
+        "wave_reg_total", "wave_mu_loss", "wave_std_loss",
+        "wave_fake_mu_lh", "wave_fake_mu_hl", "wave_fake_mu_hh",
+        "wave_real_mu_lh", "wave_real_mu_hl", "wave_real_mu_hh",
+        # FFT stat regularizer sub-metrics
+        "fft_reg_total", "fft_mu_loss", "fft_std_loss",
+        # GAN metrics
         "fid", "fid_auc_vs_kimg", "kid_mean", "kid_std",
         "precision", "recall",
         "lpips_diversity",
@@ -294,8 +301,16 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
         G, D,
         device=device,
         train_cfg=train_cfg,
-        wave_reg=WaveReg(weight=cfg.wave_reg_weight, in_channels=cfg.out_channels) if cfg.wave_reg_enabled else None,
-        fft_reg=FFTReg(weight=cfg.fft_reg_weight) if cfg.fft_reg_enabled else None,
+        wave_reg=WaveReg(
+            weight=cfg.wave_reg_weight,
+            ema_beta=cfg.wave_reg_ema_beta,
+            in_channels=cfg.out_channels,
+        ) if cfg.wave_reg_enabled else None,
+        fft_reg=FFTReg(
+            weight=cfg.fft_reg_weight,
+            ema_beta=cfg.fft_reg_ema_beta,
+            num_bins=cfg.fft_reg_num_bins,
+        ) if cfg.fft_reg_enabled else None,
     )
 
     g_params = sum(p.numel() for p in G.parameters())
@@ -386,6 +401,20 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "fake_score_mean": metrics.get("fake_score_mean", 0.0),
                 "sec_per_iter": round(iter_time, 4),
                 "vram_peak_mb": round(vram_mb, 1),
+                # wavelet regularizer sub-metrics (empty when disabled)
+                "wave_reg_total":  metrics.get("wave_reg_total",  ""),
+                "wave_mu_loss":    metrics.get("wave_mu_loss",    ""),
+                "wave_std_loss":   metrics.get("wave_std_loss",   ""),
+                "wave_fake_mu_lh": metrics.get("wave_fake_mu_lh", ""),
+                "wave_fake_mu_hl": metrics.get("wave_fake_mu_hl", ""),
+                "wave_fake_mu_hh": metrics.get("wave_fake_mu_hh", ""),
+                "wave_real_mu_lh": metrics.get("wave_real_mu_lh", ""),
+                "wave_real_mu_hl": metrics.get("wave_real_mu_hl", ""),
+                "wave_real_mu_hh": metrics.get("wave_real_mu_hh", ""),
+                # FFT regularizer sub-metrics (empty when disabled)
+                "fft_reg_total":   metrics.get("fft_reg_total",   ""),
+                "fft_mu_loss":     metrics.get("fft_mu_loss",     ""),
+                "fft_std_loss":    metrics.get("fft_std_loss",    ""),
                 "fid": "",
                 "fid_auc_vs_kimg": "",
                 "kid_mean": "",
@@ -465,6 +494,10 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "", "g_adv": "", "g_reg": "",
                 "real_score_mean": "", "fake_score_mean": "",
                 "sec_per_iter": "", "vram_peak_mb": "",
+                "wave_reg_total": "", "wave_mu_loss": "", "wave_std_loss": "",
+                "wave_fake_mu_lh": "", "wave_fake_mu_hl": "", "wave_fake_mu_hh": "",
+                "wave_real_mu_lh": "", "wave_real_mu_hl": "", "wave_real_mu_hh": "",
+                "fft_reg_total": "", "fft_mu_loss": "", "fft_std_loss": "",
                 "fid": round(current_fid, 4),
                 "fid_auc_vs_kimg": round(fid_auc_vs_kimg, 4),
                 "kid_mean": round(gan_metrics["kid_mean"], 6),

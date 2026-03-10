@@ -58,9 +58,12 @@ class RunConfig:
 
     # Frequency regularizers (generator only)
     wave_reg_enabled: bool = False
-    wave_reg_weight: float = 1.0
+    wave_reg_weight: float = 0.02
+    wave_reg_ema_beta: float = 0.99
     fft_reg_enabled: bool = False
-    fft_reg_weight: float = 1.0
+    fft_reg_weight: float = 0.02
+    fft_reg_ema_beta: float = 0.99
+    fft_reg_num_bins: int = 16
 
     # Dataset
     dataset_name: str = "cifar10"   # celeba | cifar10 | cifar100 | mnist | fashion_mnist
