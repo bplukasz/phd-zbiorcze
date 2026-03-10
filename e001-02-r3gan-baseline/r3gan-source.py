@@ -1,16 +1,26 @@
-
 from __future__ import annotations
 
-import math
 import copy
+import math
+import sys
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+_WAVELETS_PATH = Path(__file__).resolve().parent / "src" / "wavelets.py"
+_WAVELETS_SPEC = importlib.util.spec_from_file_location("e001_02_wavelets", _WAVELETS_PATH)
+if _WAVELETS_SPEC is None or _WAVELETS_SPEC.loader is None:
+    raise ImportError(f"Could not load wavelets module from {_WAVELETS_PATH}")
+_wavelets = importlib.util.module_from_spec(_WAVELETS_SPEC)
+_WAVELETS_SPEC.loader.exec_module(_wavelets)
+FixedHaarDWT2d = _wavelets.FixedHaarDWT2d
+
 Tensor = torch.Tensor
+ModuleT = TypeVar("ModuleT", nn.Conv2d, nn.Linear)
 
 
 def setup_nvidia_performance(device: torch.device) -> None:
@@ -32,7 +42,7 @@ def _fan_in(weight: Tensor) -> int:
     raise ValueError("Unsupported weight dimensionality.")
 
 
-def msr_init_(module: Union[nn.Conv2d, nn.Linear], activation_gain: float = 1.0):
+def msr_init_(module: ModuleT, activation_gain: float = 1.0) -> ModuleT:
     fan_in = _fan_in(module.weight)
     nn.init.normal_(module.weight, mean=0.0, std=activation_gain / math.sqrt(fan_in))
     if module.bias is not None:
@@ -84,6 +94,53 @@ class Conv2dNoBias(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.conv(x)
+
+
+class WaveletHFBranch(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, mid_channels: int, init_gate: float = 0.0) -> None:
+        super().__init__()
+        if in_channels <= 0:
+            raise ValueError(f"in_channels must be > 0, got {in_channels}")
+        if out_channels <= 0:
+            raise ValueError(f"out_channels must be > 0, got {out_channels}")
+        if mid_channels <= 0:
+            raise ValueError(f"mid_channels must be > 0, got {mid_channels}")
+
+        self.dwt = FixedHaarDWT2d(in_channels=in_channels)
+        hf_channels = in_channels * 3
+        self.conv1 = Conv2dNoBias(hf_channels, mid_channels, 3)
+        self.act1 = BiasAct2d(mid_channels)
+        self.conv2 = Conv2dNoBias(mid_channels, out_channels, 3)
+        zero_last_conv_(self.conv2.conv)
+        self.gate = nn.Parameter(torch.tensor(float(init_gate)))
+
+    def forward(self, x_rgb: Tensor) -> Tensor:
+        bands = self.dwt(x_rgb)
+        hf = torch.cat([bands["LH"], bands["HL"], bands["HH"]], dim=1)
+        y = self.conv2(self.act1(self.conv1(hf)))
+        return self.gate * y
+
+
+class MatchedCapacityBranch(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, mid_channels: int, init_gate: float = 0.0) -> None:
+        super().__init__()
+        if in_channels <= 0:
+            raise ValueError(f"in_channels must be > 0, got {in_channels}")
+        if out_channels <= 0:
+            raise ValueError(f"out_channels must be > 0, got {out_channels}")
+        if mid_channels <= 0:
+            raise ValueError(f"mid_channels must be > 0, got {mid_channels}")
+
+        self.conv1 = Conv2dNoBias(in_channels, mid_channels, 3)
+        self.act1 = BiasAct2d(mid_channels)
+        self.conv2 = Conv2dNoBias(mid_channels, out_channels, 3)
+        zero_last_conv_(self.conv2.conv)
+        self.gate = nn.Parameter(torch.tensor(float(init_gate)))
+
+    def forward(self, x_rgb: Tensor) -> Tensor:
+        x = F.avg_pool2d(x_rgb, kernel_size=2, stride=2)
+        x = self.conv2(self.act1(self.conv1(x)))
+        return self.gate * x
 
 
 class ResidualBlock(nn.Module):
@@ -209,16 +266,17 @@ class R3GANGenerator(nn.Module):
         self.cond_embed_dim = cond_embed_dim
 
         if isinstance(blocks_per_stage, int):
-            blocks_per_stage = [blocks_per_stage] * len(stage_channels)
-        blocks_per_stage = list(blocks_per_stage)
-        total_blocks = sum(blocks_per_stage)
+            blocks_per_stage_list = [blocks_per_stage] * len(stage_channels)
+        else:
+            blocks_per_stage_list = list(blocks_per_stage)
+        total_blocks = sum(blocks_per_stage_list)
 
         in_dim = z_dim + (cond_embed_dim if cond_dim > 0 else 0)
         self.cond_embed = msr_init_(nn.Linear(cond_dim, cond_embed_dim, bias=False)) if cond_dim > 0 else None
 
         self.stages = nn.ModuleList()
         prev_channels = in_dim
-        for i, (out_ch, n_blocks) in enumerate(zip(stage_channels, blocks_per_stage)):
+        for i, (out_ch, n_blocks) in enumerate(zip(stage_channels, blocks_per_stage_list)):
             self.stages.append(GeneratorStage(prev_channels, out_ch, n_blocks, expansion_factor, group_size, total_blocks, i == 0, resample_mode))
             prev_channels = out_ch
 
@@ -243,26 +301,119 @@ class R3GANDiscriminator(nn.Module):
         self.cond_embed_dim = cond_embed_dim
 
         if isinstance(blocks_per_stage, int):
-            blocks_per_stage = [blocks_per_stage] * len(stage_channels)
-        blocks_per_stage = list(blocks_per_stage)
-        total_blocks = sum(blocks_per_stage)
+            blocks_per_stage_list = [blocks_per_stage] * len(stage_channels)
+        else:
+            blocks_per_stage_list = list(blocks_per_stage)
+        total_blocks = sum(blocks_per_stage_list)
 
         self.from_rgb = Conv2dNoBias(in_channels, stage_channels[0], 1)
         self.stages = nn.ModuleList()
         for i in range(len(stage_channels) - 1):
-            self.stages.append(DiscriminatorStage(stage_channels[i], stage_channels[i + 1], blocks_per_stage[i], expansion_factor, group_size, total_blocks, False, resample_mode))
+            self.stages.append(DiscriminatorStage(stage_channels[i], stage_channels[i + 1], blocks_per_stage_list[i], expansion_factor, group_size, total_blocks, False, resample_mode))
         final_out_dim = cond_embed_dim if cond_dim > 0 else 1
-        self.stages.append(DiscriminatorStage(stage_channels[-1], final_out_dim, blocks_per_stage[-1], expansion_factor, group_size, total_blocks, True, resample_mode))
+        self.stages.append(DiscriminatorStage(stage_channels[-1], final_out_dim, blocks_per_stage_list[-1], expansion_factor, group_size, total_blocks, True, resample_mode))
         self.cond_embed = msr_init_(nn.Linear(cond_dim, cond_embed_dim, bias=False), activation_gain=1.0 / math.sqrt(cond_embed_dim)) if cond_dim > 0 else None
+
+    def _apply_conditional_projection(self, x: Tensor, cond: Optional[Tensor]) -> Tensor:
+        if self.cond_embed is not None:
+            if cond is None:
+                raise ValueError("Conditional discriminator expects cond tensor.")
+            x = (x * self.cond_embed(cond)).sum(dim=1, keepdim=True)
+        return x
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
         x = self.from_rgb(x)
         for stage in self.stages:
             x = stage(x)
-        if self.cond_embed is not None:
-            if cond is None:
-                raise ValueError("Conditional discriminator expects cond tensor.")
-            x = (x * self.cond_embed(cond)).sum(dim=1, keepdim=True)
+        x = self._apply_conditional_projection(x, cond)
+        return x.view(x.size(0))
+
+
+class WaveletR3GANDiscriminator(R3GANDiscriminator):
+    def __init__(self, img_resolution: int, stage_channels: Sequence[int], blocks_per_stage: Union[int, Sequence[int]] = 2, expansion_factor: int = 2, group_size: int = 16, cond_dim: int = 0, cond_embed_dim: int = 128, in_channels: int = 3, resample_mode: str = "bilinear", wavelet_type: str = "haar", wavelet_level: int = 1, wavelet_hf_only: bool = True, wavelet_fuse_after_stage: int = 0, wavelet_branch_mid_scale: float = 0.5, wavelet_init_gate: float = 0.0) -> None:
+        super().__init__(
+            img_resolution=img_resolution,
+            stage_channels=stage_channels,
+            blocks_per_stage=blocks_per_stage,
+            expansion_factor=expansion_factor,
+            group_size=group_size,
+            cond_dim=cond_dim,
+            cond_embed_dim=cond_embed_dim,
+            in_channels=in_channels,
+            resample_mode=resample_mode,
+        )
+        self.wavelet_fuse_after_stage = int(wavelet_fuse_after_stage)
+        if wavelet_type != "haar":
+            raise ValueError(f"Only haar wavelets are supported for now, got {wavelet_type}")
+        if wavelet_level != 1:
+            raise ValueError(f"Only wavelet_level=1 is supported for now, got {wavelet_level}")
+        if not wavelet_hf_only:
+            raise ValueError("Only HF-only wavelet branch is supported for now")
+        if self.wavelet_fuse_after_stage != 0:
+            raise ValueError(f"Only wavelet_fuse_after_stage=0 is supported for now, got {wavelet_fuse_after_stage}")
+        if len(stage_channels) < 2:
+            raise ValueError("Wavelet HF branch requires at least two discriminator stages")
+        if wavelet_branch_mid_scale <= 0.0:
+            raise ValueError(f"wavelet_branch_mid_scale must be > 0, got {wavelet_branch_mid_scale}")
+
+        branch_out_channels = stage_channels[1]
+        branch_mid_channels = max(1, int(round(branch_out_channels * float(wavelet_branch_mid_scale))))
+        self.wavelet_branch: WaveletHFBranch = WaveletHFBranch(
+            in_channels=in_channels,
+            out_channels=branch_out_channels,
+            mid_channels=branch_mid_channels,
+            init_gate=wavelet_init_gate,
+        )
+
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
+        rgb = x
+        x = self.from_rgb(x)
+        x = self.stages[0](x)
+        x = x + self.wavelet_branch(rgb)
+        for stage in self.stages[1:]:
+            x = stage(x)
+        x = self._apply_conditional_projection(x, cond)
+        return x.view(x.size(0))
+
+
+class MatchedCapacityR3GANDiscriminator(R3GANDiscriminator):
+    def __init__(self, img_resolution: int, stage_channels: Sequence[int], blocks_per_stage: Union[int, Sequence[int]] = 2, expansion_factor: int = 2, group_size: int = 16, cond_dim: int = 0, cond_embed_dim: int = 128, in_channels: int = 3, resample_mode: str = "bilinear", wavelet_fuse_after_stage: int = 0, wavelet_branch_mid_scale: float = 0.5, wavelet_init_gate: float = 0.0) -> None:
+        super().__init__(
+            img_resolution=img_resolution,
+            stage_channels=stage_channels,
+            blocks_per_stage=blocks_per_stage,
+            expansion_factor=expansion_factor,
+            group_size=group_size,
+            cond_dim=cond_dim,
+            cond_embed_dim=cond_embed_dim,
+            in_channels=in_channels,
+            resample_mode=resample_mode,
+        )
+        self.wavelet_fuse_after_stage = int(wavelet_fuse_after_stage)
+        if self.wavelet_fuse_after_stage != 0:
+            raise ValueError(f"Only wavelet_fuse_after_stage=0 is supported for now, got {wavelet_fuse_after_stage}")
+        if len(stage_channels) < 2:
+            raise ValueError("Matched-capacity branch requires at least two discriminator stages")
+        if wavelet_branch_mid_scale <= 0.0:
+            raise ValueError(f"wavelet_branch_mid_scale must be > 0, got {wavelet_branch_mid_scale}")
+
+        branch_out_channels = stage_channels[1]
+        branch_mid_channels = max(1, int(round(branch_out_channels * float(wavelet_branch_mid_scale))))
+        self.matched_capacity_branch: MatchedCapacityBranch = MatchedCapacityBranch(
+            in_channels=in_channels,
+            out_channels=branch_out_channels,
+            mid_channels=branch_mid_channels,
+            init_gate=wavelet_init_gate,
+        )
+
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
+        rgb = x
+        x = self.from_rgb(x)
+        x = self.stages[0](x)
+        x = x + self.matched_capacity_branch(rgb)
+        for stage in self.stages[1:]:
+            x = stage(x)
+        x = self._apply_conditional_projection(x, cond)
         return x.view(x.size(0))
 
 
@@ -383,8 +534,8 @@ class R3GANTrainer:
         self.G = G.to(self.device)
         self.D = D.to(self.device)
         if self.device.type == "cuda" and self.cfg.channels_last:
-            self.G = self.G.to(memory_format=torch.channels_last)
-            self.D = self.D.to(memory_format=torch.channels_last)
+            self.G = self.G.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
+            self.D = self.D.to(memory_format=torch.channels_last)  # type: ignore[call-arg]
 
         self.G_ema = copy.deepcopy(self.G).eval()
         for p in self.G_ema.parameters():

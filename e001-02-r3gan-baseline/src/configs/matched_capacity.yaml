@@ -1,0 +1,13 @@
+# =========================================================
+# Profil: matched_capacity
+# Kontrolny eksperyment: dodatkowa ścieżka o podobnym koszcie,
+# ale bez DWT — avg_pool2d + ta sama mała wieża conv.
+# =========================================================
+name: "matched_capacity"
+
+wavelet_enabled: false
+matched_capacity_enabled: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
+

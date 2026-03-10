@@ -26,6 +26,8 @@ _R3GAN_SPEC.loader.exec_module(_r3gan)
 
 R3GANGenerator = _r3gan.R3GANGenerator
 R3GANDiscriminator = _r3gan.R3GANDiscriminator
+WaveletR3GANDiscriminator = _r3gan.WaveletR3GANDiscriminator
+MatchedCapacityR3GANDiscriminator = _r3gan.MatchedCapacityR3GANDiscriminator
 R3GANTrainer = _r3gan.R3GANTrainer
 TrainerConfig = _r3gan.TrainerConfig
 build_stage_channels = _r3gan.build_stage_channels
@@ -43,6 +45,9 @@ from .gan_metrics import DependencyError, GANMetricsConfig, GANMetricsSuite, for
 
 def _build_models(cfg: RunConfig) -> Tuple[Any, Any]:
     """Buduje G i D na podstawie konfiguracji."""
+    if cfg.wavelet_enabled and cfg.matched_capacity_enabled:
+        raise ValueError("wavelet_enabled and matched_capacity_enabled are mutually exclusive")
+
     g_ch = build_stage_channels(cfg.img_resolution, cfg.base_channels, cfg.channel_max)
     d_ch = list(reversed(g_ch))
     G = R3GANGenerator(
@@ -55,7 +60,7 @@ def _build_models(cfg: RunConfig) -> Tuple[Any, Any]:
         resample_mode=cfg.resample_mode,
         out_channels=cfg.out_channels,
     )
-    D = R3GANDiscriminator(
+    d_kwargs = dict(
         img_resolution=cfg.img_resolution,
         stage_channels=d_ch,
         blocks_per_stage=cfg.blocks_per_stage,
@@ -64,6 +69,25 @@ def _build_models(cfg: RunConfig) -> Tuple[Any, Any]:
         in_channels=cfg.in_channels,
         resample_mode=cfg.resample_mode,
     )
+    if cfg.wavelet_enabled:
+        D = WaveletR3GANDiscriminator(
+            **d_kwargs,
+            wavelet_type=cfg.wavelet_type,
+            wavelet_level=cfg.wavelet_level,
+            wavelet_hf_only=cfg.wavelet_hf_only,
+            wavelet_fuse_after_stage=cfg.wavelet_fuse_after_stage,
+            wavelet_branch_mid_scale=cfg.wavelet_branch_mid_scale,
+            wavelet_init_gate=cfg.wavelet_init_gate,
+        )
+    elif cfg.matched_capacity_enabled:
+        D = MatchedCapacityR3GANDiscriminator(
+            **d_kwargs,
+            wavelet_fuse_after_stage=cfg.wavelet_fuse_after_stage,
+            wavelet_branch_mid_scale=cfg.wavelet_branch_mid_scale,
+            wavelet_init_gate=cfg.wavelet_init_gate,
+        )
+    else:
+        D = R3GANDiscriminator(**d_kwargs)
     return G, D
 
 

@@ -24,6 +24,14 @@ group_size: 16
 resample_mode: "bilinear"
 out_channels: 3
 in_channels: 3
+wavelet_enabled: false
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
 
 # === TRAINING ===
 steps: 100000

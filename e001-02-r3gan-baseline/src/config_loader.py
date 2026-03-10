@@ -47,6 +47,14 @@ class RunConfig:
     resample_mode: str = "bilinear"
     out_channels: int = 3    # output image channels
     in_channels: int = 3     # input image channels for discriminator
+    wavelet_enabled: bool = False
+    matched_capacity_enabled: bool = False
+    wavelet_type: str = "haar"
+    wavelet_level: int = 1
+    wavelet_hf_only: bool = True
+    wavelet_fuse_after_stage: int = 0
+    wavelet_branch_mid_scale: float = 0.5
+    wavelet_init_gate: float = 0.0
 
     # Dataset
     dataset_name: str = "cifar10"   # celeba | cifar10 | cifar100 | mnist | fashion_mnist
