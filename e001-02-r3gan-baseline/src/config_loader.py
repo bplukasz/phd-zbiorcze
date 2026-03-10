@@ -56,6 +56,12 @@ class RunConfig:
     wavelet_branch_mid_scale: float = 0.5
     wavelet_init_gate: float = 0.0
 
+    # Frequency regularizers (generator only)
+    wave_reg_enabled: bool = False
+    wave_reg_weight: float = 1.0
+    fft_reg_enabled: bool = False
+    fft_reg_weight: float = 1.0
+
     # Dataset
     dataset_name: str = "cifar10"   # celeba | cifar10 | cifar100 | mnist | fashion_mnist
     img_channels: int = 3

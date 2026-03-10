@@ -33,7 +33,8 @@ TrainerConfig = _r3gan.TrainerConfig
 build_stage_channels = _r3gan.build_stage_channels
 setup_nvidia_performance = _r3gan.setup_nvidia_performance
 parse_batch = _r3gan.parse_batch
-
+WaveReg = _r3gan.WaveReg
+FFTReg = _r3gan.FFTReg
 from shared.utils import set_seed, CSVLogger
 
 from .data import get_dataloader
@@ -117,7 +118,7 @@ def _make_csv_logger(out_dir: str) -> CSVLogger:
         "kimg",
         "row_type",
         "d_loss", "d_adv", "r1", "r2",
-        "g_loss",
+        "g_loss", "g_adv", "g_reg",
         "real_score_mean", "fake_score_mean",
         "sec_per_iter",
         "vram_peak_mb",
@@ -281,7 +282,13 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
         channels_last=cfg.channels_last,
         grad_clip=cfg.grad_clip,
     )
-    trainer = R3GANTrainer(G, D, device=device, train_cfg=train_cfg)
+    trainer = R3GANTrainer(
+        G, D,
+        device=device,
+        train_cfg=train_cfg,
+        wave_reg=WaveReg(weight=cfg.wave_reg_weight, in_channels=cfg.out_channels) if cfg.wave_reg_enabled else None,
+        fft_reg=FFTReg(weight=cfg.fft_reg_weight) if cfg.fft_reg_enabled else None,
+    )
 
     g_params = sum(p.numel() for p in G.parameters())
     d_params = sum(p.numel() for p in D.parameters())
@@ -365,6 +372,8 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "r1":     metrics.get("r1",      0.0),
                 "r2":     metrics.get("r2",      0.0),
                 "g_loss": metrics.get("g_loss",  0.0),
+                "g_adv":  metrics.get("g_adv",   0.0),
+                "g_reg":  metrics.get("g_reg",   0.0),
                 "real_score_mean": metrics.get("real_score_mean", 0.0),
                 "fake_score_mean": metrics.get("fake_score_mean", 0.0),
                 "sec_per_iter": round(iter_time, 4),
@@ -382,6 +391,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
             print(
                 f"[{step:>7d}/{cfg.steps}]  "
                 f"d={row['d_loss']:.4f}  g={row['g_loss']:.4f}  "
+                f"g_adv={row['g_adv']:.4f}  g_reg={row['g_reg']:.4f}  "
                 f"r1={row['r1']:.4f}  r2={row['r2']:.4f}  "
                 f"{iter_time*1000:.0f}ms"
                 + (f"  {vram_mb:.0f}MB" if device.type == "cuda" else "")
@@ -442,7 +452,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "step": step,
                 "kimg": round(kimg, 4),
                 "row_type": "gan_metrics",
-                "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "",
+                "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "", "g_adv": "", "g_reg": "",
                 "real_score_mean": "", "fake_score_mean": "",
                 "sec_per_iter": "", "vram_peak_mb": "",
                 "fid": round(current_fid, 4),

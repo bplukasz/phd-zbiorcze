@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import math
 import sys
 from dataclasses import dataclass
@@ -437,6 +438,60 @@ class R3GANPreset:
         return G, D
 
 
+class WaveReg:
+    """Frequency regularizer based on Haar wavelet HF subbands.
+
+    Penalises the L1 distance between HF wavelet coefficients (LH, HL, HH)
+    of the generated image and the real image.  Only added to generator loss.
+
+    Args:
+        weight:      Scalar multiplier applied to the raw band loss.
+        in_channels: Number of image channels (must match generator output).
+    """
+
+    def __init__(self, weight: float = 1.0, in_channels: int = 3) -> None:
+        self.weight = weight
+        self._dwt: Optional[FixedHaarDWT2d] = None
+        self._in_channels = in_channels
+
+    def _get_dwt(self, device: torch.device, dtype: torch.dtype) -> FixedHaarDWT2d:
+        if self._dwt is None:
+            self._dwt = FixedHaarDWT2d(in_channels=self._in_channels)
+        return self._dwt.to(device=device, dtype=dtype)
+
+    def __call__(self, fake: Tensor, real: Tensor) -> Tensor:
+        dwt = self._get_dwt(fake.device, fake.dtype)
+        with torch.no_grad():
+            real_bands = dwt(real.detach())
+        fake_bands = dwt(fake)
+        loss = torch.tensor(0.0, device=fake.device, dtype=fake.dtype)
+        for key in ("LH", "HL", "HH"):
+            loss = loss + (fake_bands[key] - real_bands[key].detach()).abs().mean()
+        return self.weight * loss / 3.0
+
+
+class FFTReg:
+    """Frequency regularizer based on 2-D FFT amplitude spectrum.
+
+    Penalises the L1 distance between the log-amplitude spectra of the
+    generated image and the real image.  Only added to generator loss.
+
+    Args:
+        weight: Scalar multiplier applied to the raw spectral loss.
+    """
+
+    def __init__(self, weight: float = 1.0) -> None:
+        self.weight = weight
+
+    def __call__(self, fake: Tensor, real: Tensor) -> Tensor:
+        # Work in float32 for numerical stability of fft
+        fake_f = torch.fft.rfft2(fake.float(), norm="ortho")
+        real_f = torch.fft.rfft2(real.float().detach(), norm="ortho")
+        fake_amp = torch.log1p(fake_f.abs())
+        real_amp = torch.log1p(real_f.abs())
+        return self.weight * (fake_amp - real_amp).abs().mean()
+
+
 def zero_centered_gradient_penalty(samples: Tensor, critics: Tensor) -> Tensor:
     (grad,) = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True, retain_graph=True, only_inputs=True)
     return grad.square().sum(dim=(1, 2, 3))
@@ -524,7 +579,7 @@ class TrainerConfig:
 
 
 class R3GANTrainer:
-    def __init__(self, G: R3GANGenerator, D: R3GANDiscriminator, num_classes: int = 0, device: Optional[torch.device] = None, train_cfg: Optional[TrainerConfig] = None, augment_fn: Optional[Callable[[Tensor], Tensor]] = None) -> None:
+    def __init__(self, G: R3GANGenerator, D: R3GANDiscriminator, num_classes: int = 0, device: Optional[torch.device] = None, train_cfg: Optional[TrainerConfig] = None, augment_fn: Optional[Callable[[Tensor], Tensor]] = None, wave_reg: Optional[Callable[[Tensor, Tensor], Tensor]] = None, fft_reg: Optional[Callable[[Tensor, Tensor], Tensor]] = None) -> None:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cfg = train_cfg or TrainerConfig()
         self.num_classes = num_classes
@@ -545,6 +600,10 @@ class R3GANTrainer:
         self.d_opt = torch.optim.Adam(self.D.parameters(), lr=self.cfg.lr_d, betas=self.cfg.betas)
         self.loss = R3GANLoss(self.G, self.D, gamma=self.cfg.gamma, augment_fn=augment_fn)
 
+        # Optional frequency regularizers (applied only to G loss)
+        self.wave_reg = wave_reg
+        self.fft_reg = fft_reg
+
     @staticmethod
     def set_requires_grad(module: nn.Module, flag: bool) -> None:
         for p in module.parameters():
@@ -556,6 +615,82 @@ class R3GANTrainer:
             x = x.contiguous(memory_format=torch.channels_last)
         return x
 
+    def _discriminator_step(self, real_images: Tensor, cond: Optional[Tensor]) -> Dict[str, float]:
+        """Single discriminator update step."""
+        self.set_requires_grad(self.D, True)
+        self.set_requires_grad(self.G, False)
+        self.d_opt.zero_grad(set_to_none=True)
+
+        batch_size = real_images.shape[0]
+        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
+
+        if self.cfg.use_amp_for_d and self.device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
+                d_loss, d_metrics = self.loss.discriminator_loss(z, real_images, cond)
+        else:
+            d_loss, d_metrics = self.loss.discriminator_loss(z, real_images.float(), cond)
+
+        d_loss.backward()
+        if self.cfg.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.D.parameters(), self.cfg.grad_clip)
+        self.d_opt.step()
+
+        return d_metrics
+
+    def _generator_step(self, real_images: Tensor, cond: Optional[Tensor]) -> Dict[str, float]:
+        """Single generator update step with optional frequency regularizers."""
+        self.set_requires_grad(self.D, False)
+        self.set_requires_grad(self.G, True)
+        self.g_opt.zero_grad(set_to_none=True)
+
+        batch_size = real_images.shape[0]
+        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
+        real_for_g = real_images if (self.cfg.use_amp_for_g and self.device.type == "cuda") else real_images.float()
+
+        if self.cfg.use_amp_for_g and self.device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
+                fake = self.G(z, cond)
+                fake_logits = self.D(self.loss._prep(fake), cond)
+                real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
+                rel = fake_logits - real_logits
+                g_adv = F.softplus(-rel).mean()
+
+                g_reg = torch.tensor(0.0, device=self.device)
+                if self.wave_reg is not None:
+                    g_reg = g_reg + self.wave_reg(fake, real_for_g)
+                if self.fft_reg is not None:
+                    g_reg = g_reg + self.fft_reg(fake, real_for_g)
+
+                g_total = g_adv + g_reg
+        else:
+            fake = self.G(z, cond)
+            fake_logits = self.D(self.loss._prep(fake), cond)
+            real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
+            rel = fake_logits - real_logits
+            g_adv = F.softplus(-rel).mean()
+
+            g_reg = torch.tensor(0.0, device=self.device)
+            if self.wave_reg is not None:
+                g_reg = g_reg + self.wave_reg(fake, real_for_g)
+            if self.fft_reg is not None:
+                g_reg = g_reg + self.fft_reg(fake, real_for_g)
+
+            g_total = g_adv + g_reg
+
+        g_total.backward()
+        if self.cfg.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.G.parameters(), self.cfg.grad_clip)
+        self.g_opt.step()
+
+        g_metrics = {
+            "g_loss": float(g_total.detach().cpu()),
+            "g_adv": float(g_adv.detach().cpu()),
+            "g_reg": float(g_reg.detach().cpu()),
+            "fake_score_mean": float(fake_logits.detach().mean().cpu()),
+            "real_score_mean_for_g": float(real_logits.detach().mean().cpu()),
+        }
+        return g_metrics
+
     def train_step(self, real_images: Tensor, labels: Optional[Tensor] = None) -> Dict[str, float]:
         self.G.train()
         self.D.train()
@@ -563,33 +698,8 @@ class R3GANTrainer:
         batch_size = real_images.shape[0]
         cond = prepare_condition(labels, self.num_classes, batch_size, self.device)
 
-        self.set_requires_grad(self.D, True)
-        self.set_requires_grad(self.G, False)
-        self.d_opt.zero_grad(set_to_none=True)
-        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
-        if self.cfg.use_amp_for_d and self.device.type == "cuda":
-            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
-                d_loss, d_metrics = self.loss.discriminator_loss(z, real_images, cond)
-        else:
-            d_loss, d_metrics = self.loss.discriminator_loss(z, real_images.float(), cond)
-        d_loss.backward()
-        if self.cfg.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.D.parameters(), self.cfg.grad_clip)
-        self.d_opt.step()
-
-        self.set_requires_grad(self.D, False)
-        self.set_requires_grad(self.G, True)
-        self.g_opt.zero_grad(set_to_none=True)
-        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
-        if self.cfg.use_amp_for_g and self.device.type == "cuda":
-            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
-                g_loss, g_metrics = self.loss.generator_loss(z, real_images, cond)
-        else:
-            g_loss, g_metrics = self.loss.generator_loss(z, real_images.float(), cond)
-        g_loss.backward()
-        if self.cfg.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.G.parameters(), self.cfg.grad_clip)
-        self.g_opt.step()
+        d_metrics = self._discriminator_step(real_images, cond)
+        g_metrics = self._generator_step(real_images, cond)
 
         update_ema(self.G_ema, self.G, beta=self.cfg.ema_beta)
         return {**d_metrics, **g_metrics}

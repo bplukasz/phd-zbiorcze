@@ -1,0 +1,58 @@
+# =========================================================
+# Profil: smoke_waved_fftreg
+# Smoke test: WaveletDiscriminator (HF branch) + FFTReg na G
+# 200 kroków, mały model, symboliczne metryki co 100 kroków
+# =========================================================
+name: "smoke_waved_fftreg"
+
+dataset_name: "cifar10"
+img_channels: 3
+img_size: 32
+img_resolution: 32
+
+z_dim: 64
+base_channels: 32
+channel_max: 256
+blocks_per_stage: 1
+expansion_factor: 2
+group_size: 8
+
+# --- Discriminator: wavelet HF branch ---
+wavelet_enabled: true
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
+
+# --- Generator: FFT regularizer ---
+wave_reg_enabled: false
+fft_reg_enabled: true
+fft_reg_weight: 0.1
+
+# --- Training ---
+steps: 200
+batch_size: 16
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+gamma: 10.0
+
+# --- Logging ---
+log_every: 10
+grid_every: 100
+ckpt_every: 200
+save_n_samples: 16
+
+# --- GAN Metrics (symboliczne) ---
+metrics_every: 100
+metrics_num_fake: 500
+metrics_fake_batch_size: 64
+metrics_pr_num_samples: 500
+metrics_kid_subset_size: 200
+metrics_kid_subsets: 10
+metrics_max_real: 2000
+metrics_lpips_pool_size: 512
+metrics_lpips_num_pairs: 256
+
