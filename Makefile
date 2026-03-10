@@ -1,6 +1,7 @@
 .PHONY: help venv deps gpu train tmux logs lint format test \
         train-e001 train-e001-full \
-        train-e001-02 train-e001-02-fast train-e001-02-smoke train-e001-02-overnight train-e001-02-full
+        train-e001-02 train-e001-02-fast train-e001-02-smoke train-e001-02-overnight train-e001-02-full \
+        run-e001-02
 
 SHELL := /bin/bash
 
@@ -95,3 +96,17 @@ train-e001-02-full:
 	 cd e001-02-r3gan-baseline && python run.py --profile overnight \
 	 $(if $(DATA_DIR),--data-dir $(DATA_DIR),--data-dir $(error DATA_DIR is required for CelebA))
 
+# Dowolny profil — podaj PROFILE=<nazwa_configa> (bez .yaml)
+# Opcjonalnie: DATA_DIR=/path  OVERRIDE='steps=5000 batch_size=64'
+# Użycie: make run-e001-02 PROFILE=phase_b_r0_baseline_32
+#         make run-e001-02 PROFILE=smoke
+#         make run-e001-02 PROFILE=overnight DATA_DIR=/data/celeba
+#         make run-e001-02 PROFILE=fast OVERRIDE='steps=5000 batch_size=64'
+#
+# Uruchamia trening w sesji tmux (nazwa: e001-02-<PROFIL>-<czas>).
+# Terminal podłącza się automatycznie. Wyjście bez zatrzymania: Ctrl+B, D.
+run-e001-02:
+ifndef PROFILE
+	$(error PROFILE is required. Usage: make run-e001-02 PROFILE=<nazwa_profilu>)
+endif
+	@bash scripts/run_e001_02.sh $(PROFILE) $(DATA_DIR) $(OVERRIDE)

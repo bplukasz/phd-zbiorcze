@@ -52,7 +52,7 @@ save_n_samples: 64
 
 # === GAN METRICS (co 5 kimg przy batch=128 → co 5000 steps) ===
 metrics_every: 5000
-metrics_num_fake: 10000
+metrics_num_fake: 50000
 metrics_fake_batch_size: 256
 metrics_fid_feature: 2048
 metrics_kid_feature: 2048
@@ -65,4 +65,3 @@ metrics_lpips_num_pairs: 2048
 metrics_lpips_pool_size: 4096
 metrics_amp_dtype: "bf16"
 metrics_spectral: true
-
