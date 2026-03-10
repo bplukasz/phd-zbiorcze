@@ -89,6 +89,11 @@ class RunConfig:
     metrics_lpips_pool_size: int = 4096
     metrics_amp_dtype: str = "bf16"       # "bf16" or "fp16"
 
+    # Spectral metrics (RPSE + WBED) — shared flag, computed together with other metrics
+    metrics_spectral: bool = False        # True = enable RPSE + WBED computation
+    metrics_spectral_num_images: int = 2048  # images per evaluation
+    metrics_spectral_rpse_num_bins: int = 0  # 0 = auto (min(H,W)//2)
+
     # Output
     out_dir: str = "./artifacts"
     data_dir: str = ""

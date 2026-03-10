@@ -125,6 +125,7 @@ def _make_csv_logger(out_dir: str) -> CSVLogger:
         "fid", "fid_auc_vs_kimg", "kid_mean", "kid_std",
         "precision", "recall",
         "lpips_diversity",
+        "rpse", "wbed",
         "metrics_elapsed_sec",
     ]
     return CSVLogger(os.path.join(out_dir, "logs.csv"), fieldnames)
@@ -202,6 +203,8 @@ def _validate_metrics_config(cfg: RunConfig, dataset_size: Optional[int]) -> Non
             f"Dataset too small for KID subset_size={cfg.metrics_kid_subset_size}. "
             f"Available real samples: {dataset_size}."
         )
+    if cfg.metrics_spectral and cfg.metrics_spectral_num_images < 2:
+        raise ValueError("metrics_spectral_num_images must be >= 2 when spectral metrics are enabled")
 
 
 def _build_metrics_suite(cfg: RunConfig, device: torch.device) -> Optional[GANMetricsSuite]:
@@ -226,6 +229,11 @@ def _build_metrics_suite(cfg: RunConfig, device: torch.device) -> Optional[GANMe
             use_channels_last=cfg.channels_last,
             seed=cfg.seed,
             verbose=True,
+            spectral_enabled=cfg.metrics_spectral,
+            spectral_num_images=cfg.metrics_spectral_num_images,
+            spectral_rpse_num_bins=(
+                cfg.metrics_spectral_rpse_num_bins if cfg.metrics_spectral_rpse_num_bins > 0 else None
+            ),
         )
         return GANMetricsSuite(metrics_cfg)
     except DependencyError as exc:
@@ -385,6 +393,8 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "precision": "",
                 "recall": "",
                 "lpips_diversity": "",
+                "rpse": "",
+                "wbed": "",
                 "metrics_elapsed_sec": "",
             }
             csv_logger.log(row)
@@ -462,6 +472,8 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "precision": round(gan_metrics["precision"], 4),
                 "recall": round(gan_metrics["recall"], 4),
                 "lpips_diversity": round(gan_metrics["lpips_diversity"], 4),
+                "rpse": round(gan_metrics["rpse"], 6) if "rpse" in gan_metrics else "",
+                "wbed": round(gan_metrics["wbed"], 6) if "wbed" in gan_metrics else "",
                 "metrics_elapsed_sec": round(elapsed_metrics, 3),
             }
             csv_logger.log(metrics_row)

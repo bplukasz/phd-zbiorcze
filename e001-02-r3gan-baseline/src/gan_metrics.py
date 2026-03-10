@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import random
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -21,14 +20,6 @@ class DependencyError(RuntimeError):
 
 @dataclass
 class GANMetricsConfig:
-    """Configuration for GAN evaluation.
-
-    The defaults are aimed at a single modern NVIDIA GPU such as GB10 / GB20:
-    - FID/KID on up to 50k samples
-    - PR on up to 10k features (to keep pairwise kNN tractable)
-    - LPIPS diversity on a sampled pool of fake images
-    """
-
     device: str = "cuda"
     input_range: Literal["minus_one_to_one", "zero_one", "uint8"] = "minus_one_to_one"
 
@@ -61,7 +52,10 @@ class GANMetricsConfig:
     seed: int = 42
     verbose: bool = True
 
-
+    # Spectral metrics (RPSE + WBED) - single flag enables both
+    spectral_enabled: bool = False
+    spectral_num_images: int = 2048
+    spectral_rpse_num_bins: Optional[int] = None  # None -> auto min(H,W)//2
 class TorchvisionInceptionPool3(nn.Module):
     """Pool3 feature extractor for PR metric.
 
@@ -78,13 +72,8 @@ class TorchvisionInceptionPool3(nn.Module):
         try:
             from torchvision.models import inception_v3
             from torchvision.models.inception import Inception_V3_Weights
-        except Exception as exc:  # pragma: no cover - depends on env
-            raise DependencyError(
-                "torchvision is required for the PR feature extractor. "
-                "Install a torchvision build matching your PyTorch/CUDA stack."
-            ) from exc
-
-        # Newer torchvision requires aux_logits=True when pretrained weights are used.
+        except Exception as exc:
+            raise DependencyError("torchvision is required for the PR feature extractor.") from exc
         model = inception_v3(weights=Inception_V3_Weights.IMAGENET1K_V1, aux_logits=True)
         model.fc = nn.Identity()
         model.dropout = nn.Identity()
@@ -98,7 +87,7 @@ class TorchvisionInceptionPool3(nn.Module):
 
     def forward(self, images_01: Tensor) -> Tensor:
         if images_01.ndim != 4 or images_01.shape[1] != 3:
-            raise ValueError(f"Expected images in shape (N, 3, H, W), got {tuple(images_01.shape)}")
+            raise ValueError(f"Expected (N,3,H,W), got {tuple(images_01.shape)}")
         x = F.interpolate(images_01.float(), size=(299, 299), mode="bilinear", align_corners=False, antialias=True)
         x = (x - self.mean) / self.std
         x = self.model(x)
@@ -109,20 +98,99 @@ class TorchvisionInceptionPool3(nn.Module):
         if x.ndim > 2:
             x = torch.flatten(x, 1)
         return x.float()
-
-
+# ---------------------------------------------------------------------------
+# Spectral metrics: RPSE and WBED
+# ---------------------------------------------------------------------------
+def _haar_dwt2d(imgs: Tensor) -> Dict[str, Tensor]:
+    """Single-level Haar DWT -> LL/LH/HL/HH subbands."""
+    if imgs.ndim != 4:
+        raise ValueError(f"Expected (B, C, H, W), got {tuple(imgs.shape)}")
+    b, c, h, w = imgs.shape
+    if h % 2 != 0 or w % 2 != 0:
+        raise ValueError(f"H and W must be even for DWT, got H={h}, W={w}")
+    base = torch.tensor(
+        [[[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [-0.5, -0.5]],
+         [[0.5, -0.5], [0.5, -0.5]], [[0.5, -0.5], [-0.5, 0.5]]],
+        dtype=imgs.dtype, device=imgs.device,
+    ).unsqueeze(1)
+    weight = base.repeat(c, 1, 1, 1)
+    coeffs = F.conv2d(imgs, weight, stride=2, padding=0, groups=c)
+    coeffs = coeffs.view(b, c, 4, h // 2, w // 2)
+    return {"LL": coeffs[:, :, 0], "LH": coeffs[:, :, 1],
+            "HL": coeffs[:, :, 2], "HH": coeffs[:, :, 3]}
+@torch.no_grad()
+def compute_radial_power_spectrum(imgs_zero_one: Tensor, num_bins: Optional[int] = None) -> Tensor:
+    """Mean radial power spectrum from (B,C,H,W) in [0,1]. Returns 1-D profile."""
+    imgs = imgs_zero_one.float()
+    B, C, H, W = imgs.shape
+    device = imgs.device
+    n_bins: int = num_bins if num_bins is not None else min(H, W) // 2
+    fft = torch.fft.fft2(imgs, norm="ortho")
+    fft_shifted = torch.fft.fftshift(fft, dim=(-2, -1))
+    power = fft_shifted.real ** 2 + fft_shifted.imag ** 2
+    power_mean = power.mean(dim=(0, 1))
+    cy, cx = H // 2, W // 2
+    yy = torch.arange(H, device=device, dtype=torch.float32) - cy
+    xx = torch.arange(W, device=device, dtype=torch.float32) - cx
+    YY, XX = torch.meshgrid(yy, xx, indexing="ij")
+    radius = torch.sqrt(XX ** 2 + YY ** 2)
+    max_radius = float(min(cy, cx))
+    bin_edges = torch.linspace(0.0, max_radius, n_bins + 1, device=device)
+    profile = torch.zeros(n_bins, device=device)
+    counts = torch.zeros(n_bins, device=device)
+    for i in range(n_bins):
+        mask = (radius >= bin_edges[i]) & (radius < bin_edges[i + 1])
+        n = mask.sum()
+        if n > 0:
+            profile[i] = power_mean[mask].mean()
+            counts[i] = float(n)
+    for i in range(n_bins):
+        if counts[i] == 0:
+            li, ri = i - 1, i + 1
+            while li >= 0 and counts[li] == 0:
+                li -= 1
+            while ri < n_bins and counts[ri] == 0:
+                ri += 1
+            if li >= 0 and ri < n_bins:
+                t = (i - li) / (ri - li)
+                profile[i] = profile[li] * (1.0 - t) + profile[ri] * t
+            elif li >= 0:
+                profile[i] = profile[li]
+            elif ri < n_bins:
+                profile[i] = profile[ri]
+    return profile
+def compute_rpse(real_profile: Tensor, fake_profile: Tensor) -> float:
+    """Radial Power Spectrum Error: L2 between normalised profiles. Lower=better."""
+    eps = 1e-8
+    real_norm = real_profile / (real_profile.sum() + eps)
+    fake_norm = fake_profile / (fake_profile.sum() + eps)
+    return float(torch.sqrt(((real_norm - fake_norm) ** 2).sum()).item())
+@torch.no_grad()
+def compute_wavelet_band_energies(imgs_zero_one: Tensor) -> Dict[str, Tensor]:
+    """Per-image Haar DWT subband energies. Returns {band: (B,) tensor}."""
+    subbands = _haar_dwt2d(imgs_zero_one.float())
+    return {band: (coeff ** 2).mean(dim=(1, 2, 3)) for band, coeff in subbands.items()}
+def compute_wbed(real_energies: Dict[str, Tensor], fake_energies: Dict[str, Tensor]) -> Dict[str, float]:
+    """Wavelet Band Energy Distance: sum(|mean_diff|+|std_diff|) per band. Lower=better."""
+    bands = ["LL", "LH", "HL", "HH"]
+    out: Dict[str, float] = {}
+    total = 0.0
+    for band in bands:
+        re = real_energies[band].float()
+        fe = fake_energies[band].float()
+        mean_diff = abs(re.mean().item() - fe.mean().item())
+        std_diff = abs(re.std(unbiased=False).item() - fe.std(unbiased=False).item())
+        band_dist = mean_diff + std_diff
+        out[f"wbed_{band.lower()}_mean_diff"] = mean_diff
+        out[f"wbed_{band.lower()}_std_diff"] = std_diff
+        out[f"wbed_{band.lower()}_dist"] = band_dist
+        total += band_dist
+    out["wbed_total"] = total
+    return out
 class GANMetricsSuite:
-    """GAN evaluation suite for FID, KID, Precision, Recall and LPIPS diversity.
-
-    Typical usage:
-        suite = GANMetricsSuite(config)
-        suite.prepare_real(real_loader)
-        metrics = suite.evaluate_generator(sample_fn, num_fake_images=50_000, fake_batch_size=256)
-
-    Integration assumptions:
-        - real_loader yields either images or (images, labels)
-        - sample_fn(batch_size) returns fake images with the configured input range
-        - the same suite instance is reused across evaluations so real stats stay cached
+    """GAN evaluation suite: FID, KID, Precision/Recall, LPIPS, RPSE, WBED.
+    Enable RPSE + WBED by setting ``config.spectral_enabled = True``.
+    Both metrics are lower-is-better (0 = perfect match).
     """
 
     def __init__(self, config: GANMetricsConfig) -> None:
@@ -141,45 +209,32 @@ class GANMetricsSuite:
         self._real_image_count_fid_kid = 0
         self._last_fake_feature_cache: Optional[Tensor] = None
         self._last_fake_lpips_pool: Optional[Tensor] = None
-
-    # ---------------------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------------------
+        self._real_spectral_images: Optional[Tensor] = None  # (N,C,H,W) in [0,1]
     def prepare_real(self, real_loader: Iterable[BatchType], *, force_recompute: bool = False) -> None:
-        """Populate and cache real statistics / features.
-
-        This should normally be called once per dataset. FID/KID real features are
-        cached inside torchmetrics as long as `reset_real_features=False`.
-        """
         if self._real_prepared and not force_recompute:
             return
-
         if force_recompute:
             self.fid, self.kid = self._build_torchmetrics_metrics()
             self._real_feature_cache = None
             self._real_image_count_fid_kid = 0
+            self._real_spectral_images = None
             self._real_prepared = False
-
         pr_features: List[Tensor] = []
+        real_spectral_chunks: List[Tensor] = []
         collected_pr = 0
+        collected_spectral = 0
         total_for_fid_kid = 0
-
         for batch in real_loader:
             images = self._extract_images(batch)
             if not torch.is_tensor(images):
                 raise TypeError("Could not extract image tensor from real_loader batch.")
-
             remaining_fid = None
             if self.cfg.max_real_images_fid_kid is not None:
                 remaining_fid = self.cfg.max_real_images_fid_kid - total_for_fid_kid
-                if remaining_fid <= 0 and collected_pr >= self.cfg.pr_num_samples:
+                spectral_done = (not self.cfg.spectral_enabled) or (collected_spectral >= self.cfg.spectral_num_images)
+                if remaining_fid <= 0 and collected_pr >= self.cfg.pr_num_samples and spectral_done:
                     break
-
-            if remaining_fid is None:
-                images_for_fid = images
-            else:
-                images_for_fid = images[:remaining_fid]
-
+            images_for_fid = images if remaining_fid is None else images[:remaining_fid]
             if images_for_fid.numel() > 0:
                 imgs_01 = self._to_zero_one(images_for_fid).to(self.device, non_blocking=True)
                 if self.cfg.use_channels_last and imgs_01.ndim == 4:
@@ -187,17 +242,21 @@ class GANMetricsSuite:
                 self.fid.update(imgs_01, real=True)
                 self.kid.update(imgs_01, real=True)
                 total_for_fid_kid += int(imgs_01.shape[0])
-
             if collected_pr < self.cfg.pr_num_samples:
                 take = min(self.cfg.pr_num_samples - collected_pr, int(images.shape[0]))
                 if take > 0:
-                    feats = self._extract_pr_features(images[:take])
-                    pr_features.append(feats.cpu())
+                    pr_features.append(self._extract_pr_features(images[:take]).cpu())
                     collected_pr += take
-
+            if self.cfg.spectral_enabled and collected_spectral < self.cfg.spectral_num_images:
+                take = min(self.cfg.spectral_num_images - collected_spectral, int(images.shape[0]))
+                if take > 0:
+                    real_spectral_chunks.append(self._to_zero_one(images[:take]).cpu())
+                    collected_spectral += take
+            spectral_done = (not self.cfg.spectral_enabled) or (collected_spectral >= self.cfg.spectral_num_images)
             if (
                 (self.cfg.max_real_images_fid_kid is not None and total_for_fid_kid >= self.cfg.max_real_images_fid_kid)
                 and collected_pr >= self.cfg.pr_num_samples
+                and spectral_done
             ):
                 break
 
@@ -208,22 +267,18 @@ class GANMetricsSuite:
 
         self._real_feature_cache = torch.cat(pr_features, dim=0).contiguous()
         self._real_image_count_fid_kid = total_for_fid_kid
+        if self.cfg.spectral_enabled and real_spectral_chunks:
+            self._real_spectral_images = torch.cat(real_spectral_chunks, dim=0).contiguous()
         self._real_prepared = True
 
     @torch.no_grad()
-    def evaluate_generator(
-        self,
-        sample_fn: SampleFn,
-        *,
-        num_fake_images: int = 50_000,
-        fake_batch_size: int = 256,
-    ) -> Dict[str, float]:
-        """Evaluate a generator via a `sample_fn(batch_size) -> images` callback."""
+    def evaluate_generator(self, sample_fn: SampleFn, *, num_fake_images: int = 50_000, fake_batch_size: int = 256) -> Dict[str, float]:
         self._require_real_prepared()
         self._reset_fake_states()
 
         fake_features: List[Tensor] = []
         fake_images_for_lpips: List[Tensor] = []
+        fake_images_for_spectral: List[Tensor] = []
         generated = 0
 
         while generated < num_fake_images:
@@ -238,30 +293,23 @@ class GANMetricsSuite:
 
             if self._current_feature_count(fake_features) < self.cfg.pr_num_samples:
                 take = min(self.cfg.pr_num_samples - self._current_feature_count(fake_features), int(fake.shape[0]))
-                feats = self._extract_pr_features(fake[:take])
-                fake_features.append(feats.cpu())
-
+                fake_features.append(self._extract_pr_features(fake[:take]).cpu())
             if self._current_image_count(fake_images_for_lpips) < self.cfg.lpips_pool_size:
                 take = min(self.cfg.lpips_pool_size - self._current_image_count(fake_images_for_lpips), int(fake.shape[0]))
                 fake_images_for_lpips.append(fake[:take].detach().cpu())
-
+            if self.cfg.spectral_enabled and self._current_image_count(fake_images_for_spectral) < self.cfg.spectral_num_images:
+                take = min(self.cfg.spectral_num_images - self._current_image_count(fake_images_for_spectral), int(fake.shape[0]))
+                fake_images_for_spectral.append(self._to_zero_one(fake[:take]).detach().cpu())
             generated += cur_bs
-
-        return self._finalize_metrics(fake_features, fake_images_for_lpips)
-
+        return self._finalize_metrics(fake_features, fake_images_for_lpips, fake_images_for_spectral)
     @torch.no_grad()
-    def evaluate_fake_loader(
-        self,
-        fake_loader: Iterable[BatchType],
-        *,
-        max_fake_images: int = 50_000,
-    ) -> Dict[str, float]:
-        """Evaluate metrics from a loader of already-generated fake images."""
+    def evaluate_fake_loader(self, fake_loader: Iterable[BatchType], *, max_fake_images: int = 50_000) -> Dict[str, float]:
         self._require_real_prepared()
         self._reset_fake_states()
 
         fake_features: List[Tensor] = []
         fake_images_for_lpips: List[Tensor] = []
+        fake_images_for_spectral: List[Tensor] = []
         seen = 0
 
         for batch in fake_loader:
@@ -283,86 +331,54 @@ class GANMetricsSuite:
             if self._current_image_count(fake_images_for_lpips) < self.cfg.lpips_pool_size:
                 take = min(self.cfg.lpips_pool_size - self._current_image_count(fake_images_for_lpips), int(images.shape[0]))
                 fake_images_for_lpips.append(images[:take].detach().cpu())
-
+            if self.cfg.spectral_enabled and self._current_image_count(fake_images_for_spectral) < self.cfg.spectral_num_images:
+                take = min(self.cfg.spectral_num_images - self._current_image_count(fake_images_for_spectral), int(images.shape[0]))
+                fake_images_for_spectral.append(self._to_zero_one(images[:take]).detach().cpu())
             seen += int(images.shape[0])
             if seen >= max_fake_images:
                 break
 
         if seen == 0:
             raise ValueError("No fake images were seen while evaluating fake_loader.")
-
-        return self._finalize_metrics(fake_features, fake_images_for_lpips)
-
-    # ---------------------------------------------------------------------
-    # Builders
-    # ---------------------------------------------------------------------
+        return self._finalize_metrics(fake_features, fake_images_for_lpips, fake_images_for_spectral)
     def _build_torchmetrics_metrics(self):
         try:
             from torchmetrics.image.fid import FrechetInceptionDistance
             from torchmetrics.image.kid import KernelInceptionDistance
-        except Exception as exc:  # pragma: no cover - depends on env
-            raise DependencyError(
-                "torchmetrics is required for FID/KID. Install e.g. "
-                "`pip install torchmetrics[image] torch-fidelity torchvision`."
-            ) from exc
-
-        fid = FrechetInceptionDistance(
-            feature=self.cfg.fid_feature,
-            reset_real_features=self.cfg.reset_real_features,
-            normalize=True,
-        ).to(self.device)
-
-        kid = KernelInceptionDistance(
-            feature=self.cfg.kid_feature,
-            subsets=self.cfg.kid_subsets,
-            subset_size=self.cfg.kid_subset_size,
-            reset_real_features=self.cfg.reset_real_features,
-            normalize=True,
-        ).to(self.device)
+        except Exception as exc:
+            raise DependencyError("torchmetrics is required for FID/KID.") from exc
+        fid = FrechetInceptionDistance(feature=self.cfg.fid_feature, reset_real_features=self.cfg.reset_real_features, normalize=True).to(self.device)
+        kid = KernelInceptionDistance(feature=self.cfg.kid_feature, subsets=self.cfg.kid_subsets, subset_size=self.cfg.kid_subset_size, reset_real_features=self.cfg.reset_real_features, normalize=True).to(self.device)
         return fid, kid
-
     def _build_lpips_metric(self):
         try:
             from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-        except Exception as exc:  # pragma: no cover - depends on env
-            raise DependencyError(
-                "torchmetrics[image] is required for LPIPS. Install e.g. "
-                "`pip install torchmetrics[image] torchvision`."
-            ) from exc
-
-        metric = LearnedPerceptualImagePatchSimilarity(
-            net_type=self.cfg.lpips_net_type,
-            reduction="mean",
-            normalize=False,
-        ).to(self.device)
+        except Exception as exc:
+            raise DependencyError("torchmetrics[image] is required for LPIPS.") from exc
+        metric = LearnedPerceptualImagePatchSimilarity(net_type=self.cfg.lpips_net_type, reduction="mean", normalize=False).to(self.device)
         metric.eval()
         return metric
-
-    # ---------------------------------------------------------------------
-    # Finalization
-    # ---------------------------------------------------------------------
-    def _finalize_metrics(self, fake_features: List[Tensor], fake_images_for_lpips: List[Tensor]) -> Dict[str, float]:
+    def _finalize_metrics(
+        self,
+        fake_features: List[Tensor],
+        fake_images_for_lpips: List[Tensor],
+        fake_images_for_spectral: Optional[List[Tensor]] = None,
+    ) -> Dict[str, float]:
         if not fake_features:
             raise ValueError("No fake features were collected for PR.")
         if not fake_images_for_lpips:
             raise ValueError("No fake images were collected for LPIPS diversity.")
-
         fake_feature_cache = torch.cat(fake_features, dim=0).contiguous()
         fake_lpips_pool = torch.cat(fake_images_for_lpips, dim=0).contiguous()
-
-        real_feature_cache = self._real_feature_cache
-        if real_feature_cache is None:
-            raise RuntimeError("Real metrics are not prepared. Call prepare_real(real_loader) first.")
-
+        if self._real_feature_cache is None:
+            raise RuntimeError("Real metrics not prepared. Call prepare_real() first.")
         fid_val = float(self.fid.compute().item())
         kid_mean, kid_std = self.kid.compute()
-        precision, recall = self._compute_precision_recall(real_feature_cache, fake_feature_cache)
+        precision, recall = self._compute_precision_recall(self._real_feature_cache, fake_feature_cache)
         lpips_diversity = self._compute_lpips_diversity(fake_lpips_pool)
-
         self._last_fake_feature_cache = fake_feature_cache
         self._last_fake_lpips_pool = fake_lpips_pool
-
-        return {
+        out: Dict[str, float] = {
             "fid": fid_val,
             "kid_mean": float(kid_mean.item()),
             "kid_std": float(kid_std.item()),
@@ -374,20 +390,30 @@ class GANMetricsSuite:
             "num_fake_pr": float(fake_feature_cache.shape[0]),
             "num_fake_lpips_pool": float(fake_lpips_pool.shape[0]),
         }
-
-    # ---------------------------------------------------------------------
-    # Fake metric accumulation
-    # ---------------------------------------------------------------------
+        if self.cfg.spectral_enabled:
+            if self._real_spectral_images is None:
+                raise RuntimeError("spectral_enabled=True but real spectral images not collected.")
+            if not fake_images_for_spectral:
+                raise ValueError("No fake images collected for spectral metrics.")
+            fake_spec = torch.cat(fake_images_for_spectral, dim=0).contiguous()
+            real_spec = self._real_spectral_images
+            real_prof = compute_radial_power_spectrum(real_spec, num_bins=self.cfg.spectral_rpse_num_bins)
+            fake_prof = compute_radial_power_spectrum(fake_spec, num_bins=self.cfg.spectral_rpse_num_bins)
+            out["rpse"] = compute_rpse(real_prof, fake_prof)
+            real_energies = compute_wavelet_band_energies(real_spec)
+            fake_energies = compute_wavelet_band_energies(fake_spec)
+            wbed_dict = compute_wbed(real_energies, fake_energies)
+            out["wbed"] = wbed_dict["wbed_total"]
+            out.update(wbed_dict)
+            out["num_real_spectral"] = float(real_spec.shape[0])
+            out["num_fake_spectral"] = float(fake_spec.shape[0])
+        return out
     def _update_fake_metrics(self, fake_images: Tensor) -> None:
         imgs_01 = self._to_zero_one(fake_images).to(self.device, non_blocking=True)
         if self.cfg.use_channels_last and imgs_01.ndim == 4:
             imgs_01 = imgs_01.contiguous(memory_format=torch.channels_last)
         self.fid.update(imgs_01, real=False)
         self.kid.update(imgs_01, real=False)
-
-    # ---------------------------------------------------------------------
-    # PR metric
-    # ---------------------------------------------------------------------
     @torch.no_grad()
     def _extract_pr_features(self, images: Tensor) -> Tensor:
         imgs_01 = self._to_zero_one(images).to(self.pr_device, non_blocking=True)
@@ -397,26 +423,17 @@ class GANMetricsSuite:
         with amp_context:
             feats = self.pr_extractor(imgs_01)
         return feats.float().detach()
-
     @torch.no_grad()
     def _compute_precision_recall(self, real_feats_cpu: Tensor, fake_feats_cpu: Tensor) -> Tuple[float, float]:
         real_feats = real_feats_cpu.to(self.pr_device, dtype=torch.float32, non_blocking=True)
         fake_feats = fake_feats_cpu.to(self.pr_device, dtype=torch.float32, non_blocking=True)
-
         real_radii = self._compute_knn_radii(real_feats, k=self.cfg.pr_k, chunk_size=self.cfg.pr_chunk_size)
         fake_radii = self._compute_knn_radii(fake_feats, k=self.cfg.pr_k, chunk_size=self.cfg.pr_chunk_size)
-
         precision_mask = self._membership_mask(fake_feats, real_feats, real_radii, chunk_size=self.cfg.pr_chunk_size)
         recall_mask = self._membership_mask(real_feats, fake_feats, fake_radii, chunk_size=self.cfg.pr_chunk_size)
-
-        precision = precision_mask.float().mean().item()
-        recall = recall_mask.float().mean().item()
-        return precision, recall
-
+        return precision_mask.float().mean().item(), recall_mask.float().mean().item()
     @staticmethod
     def _compute_knn_radii(features: Tensor, k: int, chunk_size: int) -> Tensor:
-        if features.ndim != 2:
-            raise ValueError(f"Expected feature matrix of shape (N, D), got {tuple(features.shape)}")
         n = features.shape[0]
         if n <= k:
             raise ValueError(f"Need more than k samples for PR. Got n={n}, k={k}.")
@@ -436,8 +453,6 @@ class GANMetricsSuite:
 
     @staticmethod
     def _membership_mask(query: Tensor, centers: Tensor, center_radii: Tensor, chunk_size: int) -> Tensor:
-        if query.ndim != 2 or centers.ndim != 2:
-            raise ValueError("query and centers must be 2D feature matrices.")
         q_norms = (query * query).sum(dim=1)
         c_norms = (centers * centers).sum(dim=1)
         out = torch.empty(query.shape[0], device=query.device, dtype=torch.bool)
@@ -446,30 +461,18 @@ class GANMetricsSuite:
         for start in range(0, query.shape[0], chunk_size):
             end = min(start + chunk_size, query.shape[0])
             d2 = GANMetricsSuite._pairwise_squared_distance(query[start:end], centers, query_norms=q_norms[start:end], ref_norms=c_norms)
-            inside = (d2 <= radii).any(dim=1)
-            out[start:end] = inside
+            out[start:end] = (d2 <= radii).any(dim=1)
         return out
-
     @staticmethod
-    def _pairwise_squared_distance(
-        query: Tensor,
-        ref: Tensor,
-        *,
-        query_norms: Optional[Tensor] = None,
-        ref_norms: Optional[Tensor] = None,
-    ) -> Tensor:
+    def _pairwise_squared_distance(query: Tensor, ref: Tensor, *, query_norms: Optional[Tensor] = None, ref_norms: Optional[Tensor] = None) -> Tensor:
         query = query.float()
         ref = ref.float()
         if query_norms is None:
             query_norms = (query * query).sum(dim=1)
         if ref_norms is None:
             ref_norms = (ref * ref).sum(dim=1)
-        d2 = query_norms[:, None] + ref_norms[None, :] - 2.0 * (query @ ref.t())
-        return d2.clamp_min_(0.0)
+        return (query_norms[:, None] + ref_norms[None, :] - 2.0 * (query @ ref.t())).clamp_min_(0.0)
 
-    # ---------------------------------------------------------------------
-    # LPIPS diversity
-    # ---------------------------------------------------------------------
     @torch.no_grad()
     def _compute_lpips_diversity(self, fake_pool: Tensor) -> float:
         n = int(fake_pool.shape[0])
@@ -550,12 +553,7 @@ class GANMetricsSuite:
     def _autocast_context(self, device: torch.device):
         if device.type != "cuda" or not self.cfg.use_amp_for_feature_extractor:
             return nullcontext()
-        if self.cfg.amp_dtype == "bf16":
-            dtype = torch.bfloat16
-        elif self.cfg.amp_dtype == "fp16":
-            dtype = torch.float16
-        else:
-            raise ValueError(f"Unsupported amp_dtype: {self.cfg.amp_dtype}")
+        dtype = torch.bfloat16 if self.cfg.amp_dtype == "bf16" else torch.float16
         return torch.autocast(device_type="cuda", dtype=dtype)
 
     @staticmethod
@@ -569,39 +567,22 @@ class GANMetricsSuite:
 
 def format_metrics(metrics: Dict[str, float]) -> str:
     """Pretty formatter for console logging."""
-    ordered = [
-        "fid",
-        "kid_mean",
-        "kid_std",
-        "precision",
-        "recall",
-        "lpips_diversity",
-        "num_real_fid_kid",
-        "num_real_pr",
-        "num_fake_pr",
-        "num_fake_lpips_pool",
-    ]
+    ordered = ["fid", "kid_mean", "kid_std", "precision", "recall", "lpips_diversity",
+               "rpse", "wbed", "num_real_fid_kid", "num_real_pr", "num_fake_pr",
+               "num_fake_lpips_pool", "num_real_spectral", "num_fake_spectral"]
     parts = []
     for key in ordered:
         if key in metrics:
             val = metrics[key]
-            if key.startswith("num_"):
-                parts.append(f"{key}={int(val)}")
-            else:
-                parts.append(f"{key}={val:.6f}")
+            parts.append(f"{key}={int(val)}" if key.startswith("num_") else f"{key}={val:.6f}")
     for key, val in metrics.items():
         if key not in ordered:
-            if isinstance(val, (int, float)):
-                parts.append(f"{key}={val}")
-            else:
-                parts.append(f"{key}={val}")
+            parts.append(f"{key}={val}")
     return " | ".join(parts)
 
 
 __all__ = [
-    "DependencyError",
-    "GANMetricsConfig",
-    "GANMetricsSuite",
-    "TorchvisionInceptionPool3",
-    "format_metrics",
+    "DependencyError", "GANMetricsConfig", "GANMetricsSuite", "TorchvisionInceptionPool3",
+    "compute_radial_power_spectrum", "compute_rpse", "compute_wavelet_band_energies",
+    "compute_wbed", "format_metrics",
 ]

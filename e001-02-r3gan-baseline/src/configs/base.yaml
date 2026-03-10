@@ -81,4 +81,4 @@ metrics_pr_k: 3
 metrics_lpips_num_pairs: 2048
 metrics_lpips_pool_size: 4096
 metrics_amp_dtype: "bf16"
-
+metrics_spectral: True
