@@ -1,0 +1,56 @@
+# =========================================================
+# Eksperyment: Faza D / R0 — Baseline (potwierdzający)
+# Rozdzielczość: 128x128
+# Seed: 44 (seed 3 z 3)
+# =========================================================
+name: "phase_d_r0_baseline_128_seed44"
+
+dataset_name: "celeba"
+img_channels: 3
+img_size: 128
+img_resolution: 128
+
+z_dim: 512
+base_channels: 128
+channel_max: 768
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+
+wavelet_enabled: false
+matched_capacity_enabled: false
+wave_reg_enabled: false
+fft_reg_enabled: false
+
+seed: 44
+steps: 400000
+batch_size: 32
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.9995
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+log_every: 200
+grid_every: 5000
+ckpt_every: 100000
+save_n_samples: 64
+
+metrics_every: 5000
+metrics_num_fake: 50000
+metrics_fake_batch_size: 64
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+metrics_spectral: true
+

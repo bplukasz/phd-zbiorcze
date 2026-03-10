@@ -1,0 +1,78 @@
+# =========================================================
+# Eksperyment: Faza C / R4 — WaveD + FFTReg (kontrola)
+# Rozdzielczość: 32x32 (CIFAR-10)
+# Opis: Dyskryminator z gałęzią waveletową HF +
+#        regularizacja FFT po stronie generatora (kontrola).
+#        FFTReg: radial power bins, log-energy, mean+std matching.
+#        Cel: sprawdzić, czy pomaga sam prior częstotliwościowy,
+#        czy konkretnie waveletowy.
+#        Identyczna struktura losu jak WaveReg — uczciwe porównanie.
+# Seed: 42 (Faza C)
+# =========================================================
+name: "phase_c_r4_waved_fftreg_32"
+
+# === DATASET ===
+dataset_name: "cifar10"
+img_channels: 3
+img_size: 32
+img_resolution: 32
+
+# === MODEL ===
+z_dim: 128
+base_channels: 64
+channel_max: 512
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+
+# === DISCRIMINATOR: wavelet HF branch ===
+wavelet_enabled: true
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
+
+# === GENERATOR: FFT regularizer (kontrola vs WaveReg) ===
+# 16 radial bins, pominięcie DC, log-energy, mean+std matching
+wave_reg_enabled: false
+fft_reg_enabled: true
+fft_reg_weight: 0.02      # ten sam lambda co w WaveReg — uczciwe porównanie
+
+# === TRAINING (identyczne jak R0–R3) ===
+seed: 42
+steps: 100000
+batch_size: 128
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.999
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+# === LOGGING ===
+log_every: 100
+grid_every: 2000
+ckpt_every: 25000
+save_n_samples: 64
+
+# === GAN METRICS (identyczne jak R0) ===
+metrics_every: 5000
+metrics_num_fake: 10000
+metrics_fake_batch_size: 256
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+metrics_spectral: true
+
