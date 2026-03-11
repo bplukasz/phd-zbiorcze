@@ -5,6 +5,7 @@ Korzysta z architektury R3GAN (r3gan-source.py w korzeniu projektu).
 Produkuje: gridy, checkpointy, real_samples, samples, logi CSV, config_used.yaml.
 """
 
+import json
 import os
 import sys
 import time
@@ -250,6 +251,40 @@ def _build_metrics_suite(cfg: RunConfig, device: torch.device) -> Optional[GANMe
         ) from exc
 
 
+def _count_params(model: torch.nn.Module) -> Dict[str, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return {"total": total, "trainable": trainable}
+
+
+def _save_model_info(G: Any, D: Any, out_dir: str) -> None:
+    """Zapisuje informacje o architekturze (liczba parametrów) do model_info.json."""
+    g_info = _count_params(G)
+    d_info = _count_params(D)
+    info = {
+        "generator": {
+            "class": type(G).__name__,
+            "params_total": g_info["total"],
+            "params_trainable": g_info["trainable"],
+            "params_total_M": round(g_info["total"] / 1e6, 4),
+        },
+        "discriminator": {
+            "class": type(D).__name__,
+            "params_total": d_info["total"],
+            "params_trainable": d_info["trainable"],
+            "params_total_M": round(d_info["total"] / 1e6, 4),
+        },
+        "total_params": g_info["total"] + d_info["total"],
+        "total_params_M": round((g_info["total"] + d_info["total"]) / 1e6, 4),
+    }
+    path = os.path.join(out_dir, "model_info.json")
+    with open(path, "w") as f:
+        json.dump(info, f, indent=2)
+    print(f"Model info saved → {path}")
+    print(f"  G ({info['generator']['class']}): {info['generator']['params_total_M']:.2f}M params")
+    print(f"  D ({info['discriminator']['class']}): {info['discriminator']['params_total_M']:.2f}M params")
+
+
 # --------------------------------------------------------------------------
 
 def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
@@ -316,6 +351,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
     g_params = sum(p.numel() for p in G.parameters())
     d_params = sum(p.numel() for p in D.parameters())
     print(f"G params: {g_params/1e6:.2f}M   D params: {d_params/1e6:.2f}M")
+    _save_model_info(G, D, out_dir)
 
     # Dataloader
     dataloader = get_dataloader(
