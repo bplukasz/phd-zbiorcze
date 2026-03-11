@@ -33,7 +33,7 @@ fft_reg_enabled: false
 
 # === TRAINING ===
 seed: 42
-steps: 100000      # ~100 kimg przy batch=128 → ok na szybki Faza B
+steps: 30000      # ~100 kimg przy batch=128 → ok na szybki Faza B
 batch_size: 128
 lr_g: 2.0e-4
 lr_d: 2.0e-4
@@ -47,11 +47,11 @@ channels_last: true
 # === LOGGING ===
 log_every: 100
 grid_every: 2000
-ckpt_every: 25000
+ckpt_every: 10000
 save_n_samples: 64
 
 # === GAN METRICS (co 5 kimg przy batch=128 → co 5000 steps) ===
-metrics_every: 5000
+metrics_every: 2500
 metrics_num_fake: 50000
 metrics_fake_batch_size: 256
 metrics_fid_feature: 2048

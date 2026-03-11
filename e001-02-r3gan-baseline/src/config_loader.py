@@ -4,10 +4,43 @@ Hierarchiczne ładowanie YAML: base.yaml + {profile}.yaml + CLI overrides
 """
 
 import os
+import re
 import yaml
 from dataclasses import dataclass, asdict
+from datetime import date
 from typing import Any, Dict, Optional, Tuple, Union
 from pathlib import Path
+
+
+def _auto_out_dir(profile: str, base_dir: Optional[Path] = None) -> str:
+    """
+    Generuje nazwę katalogu artifacts w formacie:
+        artifacts-MM-DD-{LP:02d}-{profile}
+    LP to kolejny numer z danego dnia (01, 02, …), wyznaczany na podstawie
+    istniejących podfolderów pasujących do wzorca w katalogu eksperymentu.
+    """
+    if base_dir is None:
+        # Katalog eksperymentu: src/../  →  e001-02-r3gan-baseline/
+        base_dir = Path(__file__).resolve().parents[1]
+
+    today = date.today()
+    mm = today.strftime("%m")
+    dd = today.strftime("%d")
+    prefix = f"artifacts-{mm}-{dd}-"
+
+    pattern = re.compile(rf"^artifacts-{mm}-{dd}-(\d{{2}})-")
+    max_lp = 0
+    for entry in base_dir.iterdir():
+        if entry.is_dir():
+            m = pattern.match(entry.name)
+            if m:
+                max_lp = max(max_lp, int(m.group(1)))
+
+    lp = max_lp + 1
+    # Sanitize profile name for use in directory name
+    safe_profile = re.sub(r"[^a-zA-Z0-9_-]", "-", profile)
+    dir_name = f"{prefix}{lp:02d}-{safe_profile}"
+    return str(base_dir / dir_name)
 
 
 @dataclass
@@ -130,8 +163,12 @@ class ConfigLoader:
         cfg = RunConfig()
         cfg.update_from_dict(self._load_yaml(self.config_dir / "base.yaml"))
         cfg.update_from_dict(self._load_yaml(self.config_dir / f"{profile.strip().lower()}.yaml"))
+        out_dir_overridden = overrides is not None and "out_dir" in overrides
         if overrides:
             cfg.update_from_dict(overrides)
+        # Auto-generate out_dir unless the user explicitly provided one
+        if not out_dir_overridden and cfg.out_dir == "./artifacts":
+            cfg.out_dir = _auto_out_dir(profile)
         return cfg
 
     def save_config(self, cfg: RunConfig, output_path: str) -> None:
