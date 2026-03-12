@@ -43,7 +43,7 @@ fft_reg_enabled: false
 
 # === TRAINING (identyczne jak R0/R1/R2 — krytyczne!) ===
 seed: 42
-steps: 100000
+steps: 30000
 batch_size: 128
 lr_g: 2.0e-4
 lr_d: 2.0e-4
@@ -57,12 +57,12 @@ channels_last: true
 # === LOGGING ===
 log_every: 100
 grid_every: 2000
-ckpt_every: 25000
+ckpt_every: 10000
 save_n_samples: 64
 
 # === GAN METRICS (identyczne jak R0) ===
-metrics_every: 5000
-metrics_num_fake: 10000
+metrics_every: 2500
+metrics_num_fake: 50000
 metrics_fake_batch_size: 256
 metrics_fid_feature: 2048
 metrics_kid_feature: 2048
