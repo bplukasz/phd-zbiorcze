@@ -774,6 +774,37 @@ class R3GANTrainer:
         # Optional frequency regularizers (applied only to G loss)
         self.wave_reg = wave_reg
         self.fft_reg = fft_reg
+        self.wave_reg_active = wave_reg is not None
+        self.fft_reg_active = fft_reg is not None
+
+    def set_aux_branch_gate(self, gate_value: float) -> bool:
+        """Set gate for wavelet or matched-capacity auxiliary branch if present."""
+        branch = getattr(self.D, "wavelet_branch", None)
+        if branch is None:
+            branch = getattr(self.D, "matched_capacity_branch", None)
+        if branch is None or not hasattr(branch, "gate"):
+            return False
+        with torch.no_grad():
+            branch.gate.fill_(float(gate_value))
+        return True
+
+    def set_wave_reg_weight(self, weight: float) -> bool:
+        if self.wave_reg is None or not hasattr(self.wave_reg, "weight"):
+            return False
+        self.wave_reg.weight = float(weight)
+        return True
+
+    def set_fft_reg_weight(self, weight: float) -> bool:
+        if self.fft_reg is None or not hasattr(self.fft_reg, "weight"):
+            return False
+        self.fft_reg.weight = float(weight)
+        return True
+
+    def set_wave_reg_active(self, active: bool) -> None:
+        self.wave_reg_active = bool(active)
+
+    def set_fft_reg_active(self, active: bool) -> None:
+        self.fft_reg_active = bool(active)
 
     @staticmethod
     def set_requires_grad(module: nn.Module, flag: bool) -> None:
@@ -822,11 +853,11 @@ class R3GANTrainer:
 
         def _apply_regs(fake_: Tensor, real_: Tensor) -> Tensor:
             g_reg_ = torch.tensor(0.0, device=self.device)
-            if self.wave_reg is not None:
+            if self.wave_reg is not None and self.wave_reg_active:
                 wave_loss, wave_m = self.wave_reg(fake_, real_)
                 g_reg_ = g_reg_ + wave_loss
                 extra_reg_metrics.update(wave_m)
-            if self.fft_reg is not None:
+            if self.fft_reg is not None and self.fft_reg_active:
                 fft_loss, fft_m = self.fft_reg(fake_, real_)
                 g_reg_ = g_reg_ + fft_loss
                 extra_reg_metrics.update(fft_m)

@@ -113,11 +113,88 @@ def _update_fid_auc(
     return (current_kimg, current_fid), cumulative_auc
 
 
+def _lerp(start: float, end: float, alpha: float) -> float:
+    alpha = max(0.0, min(1.0, alpha))
+    return start + (end - start) * alpha
+
+
+def _compute_aux_branch_gate(cfg: RunConfig, step: int) -> Optional[float]:
+    if not cfg.aux_branch_gate_warmup_enabled:
+        return None
+    start_step = cfg.aux_branch_gate_warmup_start_step
+    end_step = cfg.aux_branch_gate_warmup_end_step
+    if end_step <= start_step:
+        return float(cfg.aux_branch_gate_warmup_end_value)
+    if step <= start_step:
+        return float(cfg.aux_branch_gate_warmup_start_value)
+    if step >= end_step:
+        return float(cfg.aux_branch_gate_warmup_end_value)
+    alpha = (step - start_step) / float(end_step - start_step)
+    return _lerp(cfg.aux_branch_gate_warmup_start_value, cfg.aux_branch_gate_warmup_end_value, alpha)
+
+
+def _compute_piecewise_weight(
+    base_weight: float,
+    schedule_enabled: bool,
+    start_step: int,
+    peak_step: int,
+    end_step: int,
+    start_weight: float,
+    peak_weight: float,
+    end_weight: float,
+    step: int,
+) -> float:
+    if not schedule_enabled:
+        return float(base_weight)
+    if peak_step <= start_step:
+        peak_step = start_step
+    if end_step <= peak_step:
+        end_step = peak_step
+    if step <= start_step:
+        return float(start_weight)
+    if step <= peak_step:
+        if peak_step == start_step:
+            return float(peak_weight)
+        alpha = (step - start_step) / float(peak_step - start_step)
+        return _lerp(start_weight, peak_weight, alpha)
+    if step <= end_step:
+        if end_step == peak_step:
+            return float(end_weight)
+        alpha = (step - peak_step) / float(end_step - peak_step)
+        return _lerp(peak_weight, end_weight, alpha)
+    return float(end_weight)
+
+
+def _resolve_fid_gated_activation(
+    gate_enabled: bool,
+    gate_threshold: float,
+    gate_min_step: int,
+    gate_latched: bool,
+    current_step: int,
+    last_fid: Optional[float],
+    was_active: bool,
+) -> Tuple[bool, bool]:
+    if not gate_enabled:
+        return True, was_active
+    if gate_latched and was_active:
+        return True, True
+    fid_ready = last_fid is not None and last_fid <= gate_threshold
+    active_now = current_step >= gate_min_step and fid_ready
+    latched_state = was_active or active_now if gate_latched else active_now
+    return active_now, latched_state
+
+
 def _make_csv_logger(out_dir: str) -> CSVLogger:
     fieldnames = [
         "step",
         "kimg",
         "row_type",
+        "aux_branch_gate",
+        "last_fid_for_gates",
+        "wave_reg_weight_eff",
+        "wave_reg_active",
+        "fft_reg_weight_eff",
+        "fft_reg_active",
         "d_loss", "d_adv", "r1", "r2",
         "g_loss", "g_adv", "g_reg",
         "real_score_mean", "fake_score_mean",
@@ -186,6 +263,21 @@ def _export_samples(trainer: R3GANTrainer, n: int, out_dir: str, step: int) -> N
 
 
 def _validate_metrics_config(cfg: RunConfig, dataset_size: Optional[int]) -> None:
+    if cfg.wave_reg_fid_gate_enabled and cfg.metrics_every == 0:
+        raise ValueError("wave_reg_fid_gate_enabled requires metrics_every > 0 (FID must be computed)")
+    if cfg.fft_reg_fid_gate_enabled and cfg.metrics_every == 0:
+        raise ValueError("fft_reg_fid_gate_enabled requires metrics_every > 0 (FID must be computed)")
+    if cfg.aux_branch_gate_warmup_enabled and cfg.aux_branch_gate_warmup_end_step < cfg.aux_branch_gate_warmup_start_step:
+        raise ValueError("aux_branch_gate_warmup_end_step must be >= aux_branch_gate_warmup_start_step")
+    if cfg.wave_reg_schedule_enabled and not (
+        cfg.wave_reg_schedule_start_step <= cfg.wave_reg_schedule_peak_step <= cfg.wave_reg_schedule_end_step
+    ):
+        raise ValueError("wave_reg schedule requires start_step <= peak_step <= end_step")
+    if cfg.fft_reg_schedule_enabled and not (
+        cfg.fft_reg_schedule_start_step <= cfg.fft_reg_schedule_peak_step <= cfg.fft_reg_schedule_end_step
+    ):
+        raise ValueError("fft_reg schedule requires start_step <= peak_step <= end_step")
+
     if cfg.metrics_every < 0:
         raise ValueError("metrics_every must be >= 0")
     if cfg.metrics_every == 0:
@@ -397,6 +489,9 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
 
     prev_fid_point: Optional[Tuple[float, float]] = None
     fid_auc_vs_kimg = 0.0
+    last_fid_for_gates: Optional[float] = None
+    wave_reg_latched_active = False
+    fft_reg_latched_active = False
 
     for step in range(1, cfg.steps + 1):
         t_iter = time.time()
@@ -412,6 +507,63 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
             batch = next(data_iter)
         images, labels = parse_batch(batch)
 
+        # Runtime controls: aux branch gate, independent reg schedules, independent FID gates.
+        aux_branch_gate = _compute_aux_branch_gate(cfg, step)
+        if aux_branch_gate is not None:
+            trainer.set_aux_branch_gate(aux_branch_gate)
+
+        wave_reg_weight_eff = cfg.wave_reg_weight
+        wave_reg_active_eff = cfg.wave_reg_enabled
+        if cfg.wave_reg_enabled:
+            wave_reg_weight_eff = _compute_piecewise_weight(
+                base_weight=cfg.wave_reg_weight,
+                schedule_enabled=cfg.wave_reg_schedule_enabled,
+                start_step=cfg.wave_reg_schedule_start_step,
+                peak_step=cfg.wave_reg_schedule_peak_step,
+                end_step=cfg.wave_reg_schedule_end_step,
+                start_weight=cfg.wave_reg_schedule_start_weight,
+                peak_weight=cfg.wave_reg_schedule_peak_weight,
+                end_weight=cfg.wave_reg_schedule_end_weight,
+                step=step,
+            )
+            wave_reg_active_eff, wave_reg_latched_active = _resolve_fid_gated_activation(
+                gate_enabled=cfg.wave_reg_fid_gate_enabled,
+                gate_threshold=cfg.wave_reg_fid_gate_threshold,
+                gate_min_step=cfg.wave_reg_fid_gate_min_step,
+                gate_latched=cfg.wave_reg_fid_gate_latched,
+                current_step=step,
+                last_fid=last_fid_for_gates,
+                was_active=wave_reg_latched_active,
+            )
+            trainer.set_wave_reg_weight(wave_reg_weight_eff)
+            trainer.set_wave_reg_active(wave_reg_active_eff)
+
+        fft_reg_weight_eff = cfg.fft_reg_weight
+        fft_reg_active_eff = cfg.fft_reg_enabled
+        if cfg.fft_reg_enabled:
+            fft_reg_weight_eff = _compute_piecewise_weight(
+                base_weight=cfg.fft_reg_weight,
+                schedule_enabled=cfg.fft_reg_schedule_enabled,
+                start_step=cfg.fft_reg_schedule_start_step,
+                peak_step=cfg.fft_reg_schedule_peak_step,
+                end_step=cfg.fft_reg_schedule_end_step,
+                start_weight=cfg.fft_reg_schedule_start_weight,
+                peak_weight=cfg.fft_reg_schedule_peak_weight,
+                end_weight=cfg.fft_reg_schedule_end_weight,
+                step=step,
+            )
+            fft_reg_active_eff, fft_reg_latched_active = _resolve_fid_gated_activation(
+                gate_enabled=cfg.fft_reg_fid_gate_enabled,
+                gate_threshold=cfg.fft_reg_fid_gate_threshold,
+                gate_min_step=cfg.fft_reg_fid_gate_min_step,
+                gate_latched=cfg.fft_reg_fid_gate_latched,
+                current_step=step,
+                last_fid=last_fid_for_gates,
+                was_active=fft_reg_latched_active,
+            )
+            trainer.set_fft_reg_weight(fft_reg_weight_eff)
+            trainer.set_fft_reg_active(fft_reg_active_eff)
+
         metrics = trainer.train_step(images, labels)
 
         iter_time = time.time() - t_iter
@@ -426,6 +578,12 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "step": step,
                 "kimg": round(kimg, 4),
                 "row_type": "train",
+                "aux_branch_gate": round(aux_branch_gate, 6) if aux_branch_gate is not None else "",
+                "last_fid_for_gates": round(last_fid_for_gates, 6) if last_fid_for_gates is not None else "",
+                "wave_reg_weight_eff": round(wave_reg_weight_eff, 6) if cfg.wave_reg_enabled else "",
+                "wave_reg_active": int(bool(wave_reg_active_eff)) if cfg.wave_reg_enabled else "",
+                "fft_reg_weight_eff": round(fft_reg_weight_eff, 6) if cfg.fft_reg_enabled else "",
+                "fft_reg_active": int(bool(fft_reg_active_eff)) if cfg.fft_reg_enabled else "",
                 "d_loss": metrics.get("d_loss", 0.0),
                 "d_adv":  metrics.get("d_adv",  0.0),
                 "r1":     metrics.get("r1",      0.0),
@@ -511,6 +669,7 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
             )
             elapsed_metrics = time.time() - t_metrics
             current_fid = float(gan_metrics["fid"])
+            last_fid_for_gates = current_fid
             prev_fid_point, fid_auc_vs_kimg = _update_fid_auc(
                 prev_fid_point,
                 kimg,
@@ -527,6 +686,12 @@ def train(profile: str = "base", overrides: Optional[Dict[str, Any]] = None):
                 "step": step,
                 "kimg": round(kimg, 4),
                 "row_type": "gan_metrics",
+                "aux_branch_gate": "",
+                "last_fid_for_gates": round(last_fid_for_gates, 6) if last_fid_for_gates is not None else "",
+                "wave_reg_weight_eff": "",
+                "wave_reg_active": "",
+                "fft_reg_weight_eff": "",
+                "fft_reg_active": "",
                 "d_loss": "", "d_adv": "", "r1": "", "r2": "", "g_loss": "", "g_adv": "", "g_reg": "",
                 "real_score_mean": "", "fake_score_mean": "",
                 "sec_per_iter": "", "vram_peak_mb": "",

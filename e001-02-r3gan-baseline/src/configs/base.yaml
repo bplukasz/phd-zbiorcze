@@ -32,12 +32,40 @@ wavelet_hf_only: true
 wavelet_fuse_after_stage: 0
 wavelet_branch_mid_scale: 0.5
 wavelet_init_gate: 0.0
+# Optional delayed activation for auxiliary discriminator branch
+aux_branch_gate_warmup_enabled: false
+aux_branch_gate_warmup_start_step: 0
+aux_branch_gate_warmup_end_step: 0
+aux_branch_gate_warmup_start_value: 0.0
+aux_branch_gate_warmup_end_value: 0.0
 
 # === FREQUENCY REGULARIZERS (generator only) ===
 wave_reg_enabled: false
 wave_reg_weight: 1.0
+wave_reg_schedule_enabled: false
+wave_reg_schedule_start_step: 0
+wave_reg_schedule_peak_step: 0
+wave_reg_schedule_end_step: 0
+wave_reg_schedule_start_weight: 0.0
+wave_reg_schedule_peak_weight: 1.0
+wave_reg_schedule_end_weight: 1.0
+wave_reg_fid_gate_enabled: false
+wave_reg_fid_gate_threshold: 60.0
+wave_reg_fid_gate_min_step: 0
+wave_reg_fid_gate_latched: true
 fft_reg_enabled: false
 fft_reg_weight: 1.0
+fft_reg_schedule_enabled: false
+fft_reg_schedule_start_step: 0
+fft_reg_schedule_peak_step: 0
+fft_reg_schedule_end_step: 0
+fft_reg_schedule_start_weight: 0.0
+fft_reg_schedule_peak_weight: 1.0
+fft_reg_schedule_end_weight: 1.0
+fft_reg_fid_gate_enabled: false
+fft_reg_fid_gate_threshold: 60.0
+fft_reg_fid_gate_min_step: 0
+fft_reg_fid_gate_latched: true
 
 # === TRAINING ===
 steps: 100000

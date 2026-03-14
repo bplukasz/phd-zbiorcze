@@ -88,15 +88,42 @@ class RunConfig:
     wavelet_fuse_after_stage: int = 0
     wavelet_branch_mid_scale: float = 0.5
     wavelet_init_gate: float = 0.0
+    aux_branch_gate_warmup_enabled: bool = False
+    aux_branch_gate_warmup_start_step: int = 0
+    aux_branch_gate_warmup_end_step: int = 0
+    aux_branch_gate_warmup_start_value: float = 0.0
+    aux_branch_gate_warmup_end_value: float = 0.0
 
     # Frequency regularizers (generator only)
     wave_reg_enabled: bool = False
     wave_reg_weight: float = 0.02
     wave_reg_ema_beta: float = 0.99
+    wave_reg_schedule_enabled: bool = False
+    wave_reg_schedule_start_step: int = 0
+    wave_reg_schedule_peak_step: int = 0
+    wave_reg_schedule_end_step: int = 0
+    wave_reg_schedule_start_weight: float = 0.0
+    wave_reg_schedule_peak_weight: float = 0.02
+    wave_reg_schedule_end_weight: float = 0.02
+    wave_reg_fid_gate_enabled: bool = False
+    wave_reg_fid_gate_threshold: float = 60.0
+    wave_reg_fid_gate_min_step: int = 0
+    wave_reg_fid_gate_latched: bool = True
     fft_reg_enabled: bool = False
     fft_reg_weight: float = 0.02
     fft_reg_ema_beta: float = 0.99
     fft_reg_num_bins: int = 16
+    fft_reg_schedule_enabled: bool = False
+    fft_reg_schedule_start_step: int = 0
+    fft_reg_schedule_peak_step: int = 0
+    fft_reg_schedule_end_step: int = 0
+    fft_reg_schedule_start_weight: float = 0.0
+    fft_reg_schedule_peak_weight: float = 0.02
+    fft_reg_schedule_end_weight: float = 0.02
+    fft_reg_fid_gate_enabled: bool = False
+    fft_reg_fid_gate_threshold: float = 60.0
+    fft_reg_fid_gate_min_step: int = 0
+    fft_reg_fid_gate_latched: bool = True
 
     # Dataset
     dataset_name: str = "cifar10"   # celeba | cifar10 | cifar100 | mnist | fashion_mnist
