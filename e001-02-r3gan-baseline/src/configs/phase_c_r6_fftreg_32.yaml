@@ -1,15 +1,14 @@
 # =========================================================
-# Eksperyment: Faza C / R4 — WaveD + FFTReg (kontrola)
+# Eksperyment: Faza C / R3 — WaveD + WaveReg
 # Rozdzielczość: 32x32 (CIFAR-10)
 # Opis: Dyskryminator z gałęzią waveletową HF +
-#        regularizacja FFT po stronie generatora (kontrola).
-#        FFTReg: radial power bins, log-energy, mean+std matching.
-#        Cel: sprawdzić, czy pomaga sam prior częstotliwościowy,
-#        czy konkretnie waveletowy.
-#        Identyczna struktura losu jak WaveReg — uczciwe porównanie.
-# Seed: 42 (Faza C)
+#        regularizacja statystyk energii HF po stronie generatora.
+#        WaveReg: log-energy matching (mean + 0.5*std),
+#        EMA statystyk realnych (beta=0.99).
+#        lambda_wave=0.02 — punkt startowy.
+# Seed: 42 (Faza C — potem seed 43 dla 2-seedowej weryfikacji)
 # =========================================================
-name: "phase_c_r4_waved_fftreg_32"
+name: "phase_c_r6_fftreg_32"
 
 # === DATASET ===
 dataset_name: "cifar10"
@@ -26,7 +25,7 @@ expansion_factor: 2
 group_size: 16
 
 # === DISCRIMINATOR: wavelet HF branch ===
-wavelet_enabled: true
+wavelet_enabled: false
 matched_capacity_enabled: false
 wavelet_type: "haar"
 wavelet_level: 1
@@ -35,13 +34,14 @@ wavelet_fuse_after_stage: 0
 wavelet_branch_mid_scale: 0.5
 wavelet_init_gate: 0.0
 
-# === GENERATOR: FFT regularizer (kontrola vs WaveReg) ===
-# 16 radial bins, pominięcie DC, log-energy, mean+std matching
+# === GENERATOR: wavelet statistic regularizer ===
+# Cel: dopasowanie rozkładu log-energii pasm LH/HL/HH fake→real
+# EMA statystyk realnych utrzymywane w buforze trainera
 wave_reg_enabled: false
+fft_reg_weight: 0.02     # lambda_wave — punkt startowy wg roadmapy
 fft_reg_enabled: true
-fft_reg_weight: 0.02      # ten sam lambda co w WaveReg — uczciwe porównanie
 
-# === TRAINING (identyczne jak R0–R3) ===
+# === TRAINING (identyczne jak R0/R1/R2 — krytyczne!) ===
 seed: 42
 steps: 30000
 batch_size: 128

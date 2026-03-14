@@ -829,3 +829,29 @@ Ale w wersji, którą bym rekomendował, wygląda to tak:
 W następnej wiadomości mogę Ci to przepisać w formie **bardzo konkretnej roadmapy implementacyjnej dzień-po-dniu / etap-po-etapie**, już z nazwami klas, funkcji, configów i kolejnością commitów, tak żeby drugi model mógł to praktycznie wdrażać bez zgadywania.
 
 [1]: https://openreview.net/forum?id=OrtN9hPP7V "The GAN is dead; long live the GAN! A Modern GAN Baseline | OpenReview"
+
+====================
+
+Dlaczego Twoje ulepszenia nie działają:
+1. Metryka FID "nie widzi" waveletów
+FID używa sieci Inception wytrenowanej na ImageNet, która skupia się na cechach semantycznych (obiekty, kształty), a nie na częstotliwościach. Twoje wavelety poprawiają RPSE (0.00019 → 0.00016 w r2), ale Inception tego nie nagradza.
+2. Dyskryminator z waveletami daje mu "przewagę"
+Dodając gałąź waveletową do D, dajesz mu dodatkowe narzędzie do odróżniania fake od real. Generator musi teraz "naprawiać" częstotliwości, co odciąga zasoby od innych aspektów obrazu.
+3. Wave regularization jest za słaba i niestabilna
+Waga 0.02 przy wave_loss ~0.001 daje efektywny wpływ ~0.00002 — znikomy
+WBED osiąga minimum w kroku 22.5k, potem rośnie 4x do końca treningu
+Brak schedulera wagi — stała wartość przez cały trening
+4. Konflikt celów optymalizacyjnych w r3
+Łączysz wavelet D + wave_reg, co tworzy "grę o sumie zerowej":
+D uczy się wykrywać fake po waveletach
+Wave_reg wymusza na G podobne wavelety do real
+Te cele mogą się wykluczać
+5. 32x32 to za mała rozdzielczość
+Haar level 1 na 32x32 daje pasma 16x16 — bardzo mało informacji. Wavelety są sensowniejsze przy 64x64+.
+
+Co zmienić:
+- Przetestuj wave_reg BEZ wavelet dyskryminatora — izoluj efekt regularyzacji
+- Zwiększ rozdzielczość do 64x64 — masz już config phase_b_r0_baseline_64.yaml
+- Użyj schedulera dla wave_reg_weight — zacznij od 0.1, zmniejszaj do 0.01
+- Rozważ wavelety w Generatorze zamiast w Dyskryminatorze
+- Zmień metrykę — jeśli zależy Ci na jakości spektralnej, FID nie jest odpowiednią miarą
