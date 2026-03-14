@@ -33,3 +33,4 @@ kaggle.json
 
 # Dodano wildcard dla folderów artifacts
 artifacts*/
+runs/
