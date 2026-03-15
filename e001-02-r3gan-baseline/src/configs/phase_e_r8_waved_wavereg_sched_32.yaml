@@ -1,0 +1,90 @@
+# =========================================================
+# Eksperyment: Faza E / R8 — WaveD + WaveReg + harmonogram wagi (P0 hipoteza 1, wariant r3)
+# Rozdzielczość: 32x32 (CIFAR-10)
+# Baza: r3 (wavelet D HF branch + wavereg), ale stała waga zastąpiona schedułem
+#
+# Hipoteza: w r3 kara wave_reg = const 0.02 niszczyła FID na ostatnim odcinku.
+# Rozwiązanie: ten sam schedule co r7, ale z gałęzią waveletową w D:
+#   - 0-5k:    wave_reg_weight = 0.0   (wavelet D działa, reg wyłączony)
+#   - 5k-15k:  liniowo 0.0 → 0.02
+#   - 15k-30k: liniowo 0.02 → 0.005   (annealing)
+#
+# Cel ablacyjny: ustalić czy degradacja FID r3 wynikała z samej wagi (schedule fix)
+# czy też z konfliktu wavelet D + wavereg (wtedy r7 będzie lepszy niż r8).
+# Seed: 42 | Porównanie bezpośrednie z r3 (FID 24.85) i r7
+# =========================================================
+name: "phase_e_r8_waved_wavereg_sched_32"
+
+# === DATASET ===
+dataset_name: "cifar10"
+img_channels: 3
+img_size: 32
+img_resolution: 32
+
+# === MODEL ===
+z_dim: 128
+base_channels: 64
+channel_max: 512
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+
+# === DISCRIMINATOR: gałąź waveletowa HF (identycznie jak r3) ===
+wavelet_enabled: true
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
+
+# === GENERATOR: WaveReg z harmonogramem wagi ===
+# Identyczny schedule jak r7; gałąź wavelet D aktywna od kroku 0
+wave_reg_enabled: true
+wave_reg_weight: 0.02          # bazowa wartość (nieużywana gdy schedule aktywny)
+wave_reg_ema_beta: 0.99
+wave_reg_schedule_enabled: true
+wave_reg_schedule_start_step: 5000     # waga = 0.0 dla kroków 0-5k
+wave_reg_schedule_peak_step: 15000     # waga osiąga 0.02 w kroku 15k
+wave_reg_schedule_end_step: 30000      # waga spada do 0.005 w kroku 30k
+wave_reg_schedule_start_weight: 0.0
+wave_reg_schedule_peak_weight: 0.02
+wave_reg_schedule_end_weight: 0.005
+fft_reg_enabled: false
+
+# === TRAINING (identyczne jak R0/R3 — krytyczne!) ===
+seed: 42
+steps: 30000
+batch_size: 128
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.999
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+# === LOGGING ===
+log_every: 100
+grid_every: 2000
+ckpt_every: 10000
+save_n_samples: 64
+
+# === GAN METRICS (identyczne jak R0) ===
+metrics_every: 2500
+metrics_num_fake: 50000
+metrics_fake_batch_size: 256
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+metrics_spectral: true
+

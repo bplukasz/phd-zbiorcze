@@ -95,3 +95,30 @@ Kryterium sukcesu pod publikacje: medianowy FID (3 seedy) <= FID `r0` + 0.5 przy
 ### regularizer_dynamics.png
 
 ![regularizer_dynamics.png](./regularizer_dynamics.png)
+
+
+
+Nowe konfiguracje fazy E (src/configs/)
+Punkt 1 — harmonogram wave_reg_weight (P0)
+phase_e_r7_wavereg_sched_32 — baza r5 (wavereg only, bez waved D)
+phase_e_r8_waved_wavereg_sched_32 — baza r3 (waved D + wavereg)
+Schedule dla obu: 0.0 → 0.02 → 0.005 na krokach 0–5k / 5k–15k / 15k–30k
+0–5k: reg wyłączony (model buduje semantykę bez kary)
+5k–15k: liniowy ramp do peak 0.02
+15k–30k: annealing do 0.005 (zatrzymuje drift na ogonie)
+R7 to czystsza ablacja (jeden zmieniany element vs. r5), R8 diagnozuje czy problem r3 był w wadze czy w konflikcie architektur.
+ 
+Punkt 2 — opóźniony gate warmup gałęzi wavelet D (P0)
+phase_e_r9_waved_gatewarm_32 — baza r2 (waved D only, bez wavereg)
+Gate: 0.0 → 0.4 w oknie kroków 3k–12k
+0–3k: gałąź HF w D nieaktywna (gate=0.0) — brak konfliktu z wczesnym treningiem
+3k–12k: liniowy ramp do 0.4 (środek zalecanego zakresu 0.3–0.5)
+12k+: stały gate=0.4
+ 
+Punkt 1+2 łącznie (kombinowany P0)
+phase_e_r10_waved_wavereg_combo_32 — r3 + oba mechanizmy jednocześnie
+Gate warmup kończy się przy 12k → wave_reg osiąga szczyt przy 15k → właściwa kolejność dojrzewania. To główny kandydat do publikacji jeśli obie hipotezy się potwierdzą.
+ 
+Punkt 3 — bramka FID-warunkowa dla wave_reg (P1)
+phase_e_r11_wavereg_fidgate_32 — baza r5 + wave_reg_fid_gate
+Warunek aktywacji: krok ≥ 7500 ORAZ FID ≤ 60.0 (latched). Waga stała 0.02 po aktywacji — celowo bez schedule, żeby izolować efekt samej bramki od timingu. Bezpośrednie porównanie z r7 pokaże czy semantyczna bramka FID jest lepsza niż deterministyczny harmonogram czasowy.

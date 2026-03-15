@@ -1,0 +1,95 @@
+# =========================================================
+# Eksperyment: Faza E / R9 — WaveD z opóźnionym gate warmup (P0 hipoteza 2)
+# Rozdzielczość: 32x32 (CIFAR-10)
+# Baza: r2 (wavelet D HF branch, brak wavereg)
+#
+# Hipoteza: gałąź waveletowa w D aktywna od kroku 0 (gate=0.0, ale trainable)
+# może zakłócać wczesne uczenie. Gate warmup pozwala modelowi najpierw opanować
+# globalną strukturę obrazu, a dopiero potem włącza sygnał wysokoczęstotliwościowy.
+#
+# Mechanizm: aux_branch_gate_warmup forcuje wartość gate w D:
+#   - 0-3k:   gate = 0.0   (gałąź wavelet D nieaktywna — identycznie jak pure baseline)
+#   - 3k-12k: liniowo 0.0 → 0.4  (stopniowe włączanie branchy HF)
+#   - 12k+:   gate = 0.4  (stabilna wartość — umiarkowany wpływ HF)
+#
+# Uzasadnienie gate_end=0.4: środek zakresu 0.3-0.5 z analizy; wartość zbyt wysoka
+# (>0.6) mogłaby zdominować główną ścieżkę D; zbyt niska (<0.2) bez efektu.
+#
+# Oczekiwany efekt: FID bliższy r0 niż r2 (22.93→≤22.0?), stabilniejszy AUC FID.
+# Seed: 42 | Czysta ablacja: zmiana tylko gate warmup względem r2
+# =========================================================
+name: "phase_e_r9_waved_gatewarm_32"
+
+# === DATASET ===
+dataset_name: "cifar10"
+img_channels: 3
+img_size: 32
+img_resolution: 32
+
+# === MODEL ===
+z_dim: 128
+base_channels: 64
+channel_max: 512
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+
+# === DISCRIMINATOR: gałąź waveletowa HF + opóźniony gate warmup ===
+wavelet_enabled: true
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0         # startuje w 0 — warmup przejmuje kontrolę od kroku 1
+
+# === AUX BRANCH GATE WARMUP ===
+# Gałąź wavelet D stopniowo włączana: 0→0.4 w oknie 3k-12k kroków
+# Uzasadnienie: pierwsze 3k kroków model uczy się semantyki bez HF bias;
+# ramp do 12k odpowiada ~30% całkowitego treningu — wystarczająco wolno
+aux_branch_gate_warmup_enabled: true
+aux_branch_gate_warmup_start_step: 3000    # gate = 0.0 dla kroków 0-3k
+aux_branch_gate_warmup_end_step: 12000     # gate osiąga 0.4 w kroku 12k
+aux_branch_gate_warmup_start_value: 0.0
+aux_branch_gate_warmup_end_value: 0.4
+
+# === GENERATOR: brak regularizera (izolacja efektu gate warmup) ===
+wave_reg_enabled: false
+fft_reg_enabled: false
+
+# === TRAINING (identyczne jak R0/R2 — krytyczne!) ===
+seed: 42
+steps: 30000
+batch_size: 128
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.999
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+# === LOGGING ===
+log_every: 100
+grid_every: 2000
+ckpt_every: 10000
+save_n_samples: 64
+
+# === GAN METRICS (identyczne jak R0) ===
+metrics_every: 2500
+metrics_num_fake: 50000
+metrics_fake_batch_size: 256
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+metrics_spectral: true
+

@@ -1,0 +1,100 @@
+# =========================================================
+# Eksperyment: Faza E / R11 — WaveReg z bramką FID-warunkową (P1 hipoteza 3)
+# Rozdzielczość: 32x32 (CIFAR-10)
+# Baza: r5 (wavereg only), ale aktywacja wave_reg uzależniona od stanu FID
+#
+# Hipoteza: włączanie wave_reg od kroku 0 zakłóca wczesny trening semantyczny.
+# Rozwiązanie: wave_reg aktywuje się dopiero gdy model "dojrzeje":
+#   - Warunek: step ≥ 7500 ORAZ last_fid ≤ 60.0
+#   - Po aktywacji: zablokowane (latched=true) — reg pozostaje aktywny do końca
+#   - Waga po aktywacji: stała 0.02 (celowo bez schedule — izolacja efektu bramy)
+#
+# Uzasadnienie progów:
+#   step_min=7500: ~25% całkowitego treningu; model ma już bazową strukturę
+#   fid_threshold=60: w CIFAR-10 r3gan FID<60 pojawia się ok. 2.5-5k kroków,
+#     więc w praktyce bramka odpali przy pierwszej ewaluacji ≥7.5k (krok 7500).
+#   metrics_every=2500: kolejna ewaluacja po 7500 to krok 7500 — brak opóźnienia.
+#
+# Porównanie z r7 (schedule): r7 to deterministyczny czas startowy; r11 to
+# semantycznie-warunkowany start. Oba mechanizmy rozwiązują ten sam problem
+# inaczej — ważne dla analizy ablacyjnej pod paper.
+#
+# Oczekiwany efekt: FID zbliżony do r7 przy podobnym WBED; jeśli r11 < r7
+# → semantyczna bramka FID skuteczniejsza niż prosty time-schedule.
+# Seed: 42
+# =========================================================
+name: "phase_e_r11_wavereg_fidgate_32"
+
+# === DATASET ===
+dataset_name: "cifar10"
+img_channels: 3
+img_size: 32
+img_resolution: 32
+
+# === MODEL ===
+z_dim: 128
+base_channels: 64
+channel_max: 512
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+
+# === DISCRIMINATOR: bez gałęzi waveletowej (identycznie jak r5) ===
+wavelet_enabled: false
+matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
+
+# === GENERATOR: WaveReg z FID-warunkową bramką aktywacji ===
+# wave_reg aktywuje się gdy: krok ≥ 7500 I FID ≤ 60.0 (latched — nie wyłącza się)
+# Po aktywacji waga pozostaje stała 0.02 (brak schedule — izolacja efektu bramy)
+wave_reg_enabled: true
+wave_reg_weight: 0.02
+wave_reg_ema_beta: 0.99
+wave_reg_schedule_enabled: false         # brak schedule — celowo, dla czystości ablacji
+wave_reg_fid_gate_enabled: true
+wave_reg_fid_gate_threshold: 60.0        # FID musi być ≤ 60 przed aktywacją
+wave_reg_fid_gate_min_step: 7500         # minimalna liczba kroków przed aktywacją
+wave_reg_fid_gate_latched: true          # po aktywacji — nie wyłącza się
+fft_reg_enabled: false
+
+# === TRAINING (identyczne jak R0/R5 — krytyczne!) ===
+# UWAGA: wave_reg_fid_gate_enabled wymaga metrics_every > 0
+seed: 42
+steps: 30000
+batch_size: 128
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.999
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+# === LOGGING ===
+log_every: 100
+grid_every: 2000
+ckpt_every: 10000
+save_n_samples: 64
+
+# === GAN METRICS (identyczne jak R0; metrics_every > 0 wymagane przez FID gate!) ===
+metrics_every: 2500
+metrics_num_fake: 50000
+metrics_fake_batch_size: 256
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+metrics_spectral: true
+
