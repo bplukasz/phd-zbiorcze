@@ -8,6 +8,9 @@ compute_aux_branch_gate = getattr(experiment_module, "_compute_aux_branch_gate")
 compute_piecewise_weight = getattr(experiment_module, "_compute_piecewise_weight")
 resolve_fid_gated_activation = getattr(experiment_module, "_resolve_fid_gated_activation")
 validate_metrics_config = getattr(experiment_module, "_validate_metrics_config")
+format_eta = getattr(experiment_module, "_format_eta")
+count_remaining_metric_evals = getattr(experiment_module, "_count_remaining_metric_evals")
+estimate_remaining_seconds = getattr(experiment_module, "_estimate_remaining_seconds")
 
 
 def test_aux_branch_gate_warmup_is_linear_between_steps() -> None:
@@ -88,4 +91,28 @@ def test_fid_gate_requires_metrics_enabled() -> None:
         assert "wave_reg_fid_gate_enabled requires metrics_every > 0" in str(exc)
     else:
         raise AssertionError("Expected ValueError when FID-gated regularizer is enabled without metrics")
+
+
+def test_format_eta_adapts_units() -> None:
+    assert format_eta(45) == "45s"
+    assert format_eta(120) == "2m"
+    assert format_eta(3660) == "1h 01m"
+
+
+def test_count_remaining_metric_evals_includes_current_due_eval() -> None:
+    assert count_remaining_metric_evals(step=4000, total_steps=10000, metrics_every=2000) == 4
+    assert count_remaining_metric_evals(step=4100, total_steps=10000, metrics_every=2000) == 3
+
+
+def test_estimate_remaining_seconds_adds_metrics_overhead() -> None:
+    eta = estimate_remaining_seconds(
+        step=4000,
+        total_steps=10000,
+        sec_per_iter_ema=1.0,
+        metrics_every=2000,
+        metrics_elapsed_ema=10.0,
+    )
+    # 6000 training iterations + 4 metric evaluations * 10s
+    assert eta == 6040.0
+
 
