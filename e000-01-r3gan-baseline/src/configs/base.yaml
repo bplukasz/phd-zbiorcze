@@ -1,0 +1,66 @@
+# =========================================================
+# e000-01-r3gan-baseline — base configuration
+# Nadpisywane przez profil-specific YAML + CLI overrides
+# =========================================================
+
+# === REPRODUCIBILITY ===
+seed: 42
+deterministic: false
+
+# === PATHS ===
+out_dir: "./artifacts"
+data_dir: ""
+
+# === MODEL ===
+z_dim: 256
+img_resolution: 64
+base_channels: 96
+channel_max: 768
+blocks_per_stage: 2
+expansion_factor: 2
+group_size: 16
+resample_mode: "bilinear"
+out_channels: 3
+in_channels: 3
+
+# === TRAINING ===
+steps: 100000
+batch_size: 64
+lr_g: 2.0e-4
+lr_d: 2.0e-4
+betas: [0.0, 0.99]
+gamma: 10.0
+ema_beta: 0.999
+grad_clip: null
+
+# === AMP / PERF ===
+use_amp_for_g: true
+use_amp_for_d: false
+channels_last: true
+
+# === DATASET ===
+dataset_name: "cifar10"
+img_channels: 3
+
+# === LOGGING ===
+log_every: 100
+grid_every: 1000
+ckpt_every: 10000
+save_n_samples: 64
+real_grid_samples: 64
+
+# === GAN METRICS (FID / KID / Precision / Recall / LPIPS) ===
+metrics_every: 10000
+metrics_num_fake: 10000
+metrics_fake_batch_size: 256
+metrics_fid_feature: 2048
+metrics_kid_feature: 2048
+metrics_kid_subsets: 100
+metrics_kid_subset_size: 1000
+metrics_max_real: 50000
+metrics_pr_num_samples: 10000
+metrics_pr_k: 3
+metrics_lpips_num_pairs: 2048
+metrics_lpips_pool_size: 4096
+metrics_amp_dtype: "bf16"
+
