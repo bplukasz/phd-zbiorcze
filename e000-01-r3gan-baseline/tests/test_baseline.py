@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
 import torch
 
+import src.config_loader as config_loader
 from src.config_loader import ConfigLoader, RunConfig, get_config
 from src.artifact_io import LOG_FIELDNAMES, make_csv_logger
 from src.checkpointing import load_training_checkpoint, save_training_checkpoint, validate_resume_compatibility
@@ -30,6 +32,7 @@ if RUNNER_SPEC is None or RUNNER_SPEC.loader is None:
     raise ImportError(f"Could not load run.py from {RUNNER_PATH}")
 runner = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(runner)
+auto_out_dir = getattr(config_loader, "_auto_out_dir")
 
 
 def _make_models(img_resolution: int = 8, z_dim: int = 16, base_channels: int = 16):
@@ -128,6 +131,24 @@ def test_get_config_smoke_profile_overrides_steps() -> None:
     smoke = get_config("smoke", overrides={"out_dir": "/tmp/e000-smoke"})
     assert smoke.steps < base.steps
     assert smoke.name == "smoke"
+
+
+def test_auto_out_dir_is_nested_under_artifacts(tmp_path: Path) -> None:
+    out_dir = Path(auto_out_dir("phase_b", base_dir=tmp_path))
+    assert out_dir.parent == tmp_path / "artifacts"
+    assert out_dir.parent.exists()
+    assert re.match(r"^artifacts-\d{2}-\d{2}-\d{2}-phase_b$", out_dir.name)
+
+
+def test_auto_out_dir_increments_index_inside_artifacts_dir(tmp_path: Path) -> None:
+    first = Path(auto_out_dir("phase_b", base_dir=tmp_path))
+    first.mkdir(parents=True, exist_ok=True)
+    second = Path(auto_out_dir("phase_b", base_dir=tmp_path))
+
+    assert first.parent == second.parent == tmp_path / "artifacts"
+    assert first.name.endswith("-phase_b")
+    assert second.name.endswith("-phase_b")
+    assert first.name != second.name
 
 
 def test_config_loader_unknown_keys_report_source_base(tmp_path: Path) -> None:

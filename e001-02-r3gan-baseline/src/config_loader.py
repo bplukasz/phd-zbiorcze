@@ -14,10 +14,10 @@ from pathlib import Path
 
 def _auto_out_dir(profile: str, base_dir: Optional[Path] = None) -> str:
     """
-    Generuje nazwę katalogu artifacts w formacie:
-        artifacts-MM-DD-{LP:02d}-{profile}
+    Generuje nazwę katalogu runu w formacie:
+        artifacts/artifacts-MM-DD-{LP:02d}-{profile}
     LP to kolejny numer z danego dnia (01, 02, …), wyznaczany na podstawie
-    istniejących podfolderów pasujących do wzorca w katalogu eksperymentu.
+    istniejących podfolderów pasujących do wzorca w katalogu artifacts/.
     """
     if base_dir is None:
         # Katalog eksperymentu: src/../  →  e001-02-r3gan-baseline/
@@ -28,9 +28,12 @@ def _auto_out_dir(profile: str, base_dir: Optional[Path] = None) -> str:
     dd = today.strftime("%d")
     prefix = f"artifacts-{mm}-{dd}-"
 
+    artifacts_root = base_dir / "artifacts"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+
     pattern = re.compile(rf"^artifacts-{mm}-{dd}-(\d{{2}})-")
     max_lp = 0
-    for entry in base_dir.iterdir():
+    for entry in artifacts_root.iterdir():
         if entry.is_dir():
             m = pattern.match(entry.name)
             if m:
@@ -40,7 +43,7 @@ def _auto_out_dir(profile: str, base_dir: Optional[Path] = None) -> str:
     # Sanitize profile name for use in directory name
     safe_profile = re.sub(r"[^a-zA-Z0-9_-]", "-", profile)
     dir_name = f"{prefix}{lp:02d}-{safe_profile}"
-    return str(base_dir / dir_name)
+    return str(artifacts_root / dir_name)
 
 
 @dataclass
