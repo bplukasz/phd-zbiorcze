@@ -52,10 +52,10 @@ if [[ ! -f "${CONFIG_SRC}" ]]; then
     exit 1
 fi
 
-# Sprawdź czy sesja o tej samej nazwie już działa
+# Sprawdz czy sesja o tej samej nazwie juz dziala
 if tmux has-session -t "${SESSION}" 2>/dev/null; then
-    echo "⚠️   Sesja '${SESSION}' już istnieje."
-    echo "    Podłączam się do istniejącej sesji..."
+    echo "⚠️   Sesja '${SESSION}' juz istnieje."
+    echo "    Podlaczam sie do istniejacej sesji..."
     tmux attach -t "${SESSION}"
     exit 0
 fi
@@ -95,15 +95,20 @@ echo ""
 
 cd "${PROJECT_DIR}/e001-02-r3gan-baseline"
 
+set +e
 ${RUN_CMD} 2>&1 | tee "${RUN_DIR}/train.log"
+RUN_EXIT="\${PIPESTATUS[0]}"
+set -e
+echo "\${RUN_EXIT}" > "${RUN_DIR}/run_exit_code"
 
 echo ""
 echo "✅ Trening zakończony: \$(date '+%Y-%m-%d %H:%M:%S')"
 echo "   Logi: ${RUN_DIR}/train.log"
+exit "\${RUN_EXIT}"
 STARTEOF
 chmod +x "${START_SH}"
 
-# Uruchom sesję tmux w tle
+# Uruchom sesje tmux w tle
 tmux new-session -d -s "${SESSION}" "${START_SH}"
 
 echo ""
@@ -114,6 +119,25 @@ echo "📎  Detach:    Ctrl+B, D"
 echo "🔗  Podłącz:   tmux attach -t ${SESSION}"
 echo ""
 
-# Podłącz terminal do sesji (wyjście = Ctrl+B D, trening działa dalej)
-tmux attach -t "${SESSION}"
+if [[ -t 0 && -t 1 ]]; then
+    # Podlacz terminal do sesji (wyjscie = Ctrl+B D, trening dziala dalej)
+    tmux attach -t "${SESSION}"
+    exit 0
+fi
+
+echo "⏳ Tryb nieinteraktywny: czekam na zakończenie sesji tmux ${SESSION}..."
+while tmux has-session -t "${SESSION}" 2>/dev/null; do
+    sleep 5
+done
+
+EXIT_FILE="${RUN_DIR}/run_exit_code"
+if [[ -f "${EXIT_FILE}" ]]; then
+    RUN_EXIT="$(cat "${EXIT_FILE}")"
+    if [[ "${RUN_EXIT}" =~ ^[0-9]+$ ]]; then
+        exit "${RUN_EXIT}"
+    fi
+fi
+
+echo "❌ Nie znaleziono poprawnego kodu wyjścia: ${EXIT_FILE}" >&2
+exit 1
 

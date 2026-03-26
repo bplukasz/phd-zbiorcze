@@ -16,8 +16,8 @@ blocks_per_stage: 1
 expansion_factor: 2
 group_size: 16
 
-steps: 1000
-batch_size: 128
+steps: 5000
+batch_size: 256
 lr_g: 2.0e-4
 lr_d: 2.0e-4
 gamma: 10.0
@@ -36,3 +36,4 @@ metrics_max_real: 10000
 metrics_lpips_pool_size: 2048
 metrics_lpips_num_pairs: 1024
 
+use_amp_for_d: true

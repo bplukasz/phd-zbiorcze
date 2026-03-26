@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .profiler import get_global_profiler
+
 
 Tensor = torch.Tensor
 ModuleT = TypeVar("ModuleT", nn.Conv2d, nn.Linear)
@@ -299,8 +301,15 @@ class R3GANPreset:
 
 
 def zero_centered_gradient_penalty(samples: Tensor, critics: Tensor) -> Tensor:
-    (grad,) = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True, retain_graph=True, only_inputs=True)
-    return grad.square().sum(dim=(1, 2, 3))
+    (grad,) = torch.autograd.grad(
+        outputs=critics.sum(), 
+        inputs=samples, 
+        create_graph=False,
+        retain_graph=True,  # Keep intermediate values for main backward
+        only_inputs=True
+    )
+    # Detach gradient penalty from computation graph - we don't need to backprop through penalty calculation
+    return grad.square().sum(dim=(1, 2, 3)).detach()
 
 
 class R3GANLoss:
@@ -326,15 +335,24 @@ class R3GANLoss:
         }
 
     def discriminator_loss(self, z: Tensor, real: Tensor, cond: Optional[Tensor] = None):
+        profiler = get_global_profiler()
+        
         real = real.detach().requires_grad_(True)
         fake = self.G(z, cond).detach().requires_grad_(True)
-        real_logits = self.D(self._prep(real), cond)
-        fake_logits = self.D(self._prep(fake), cond)
-        r1 = zero_centered_gradient_penalty(real, real_logits)
-        r2 = zero_centered_gradient_penalty(fake, fake_logits)
-        rel = real_logits - fake_logits
-        adv = F.softplus(-rel)
-        loss = (adv + (self.gamma / 2.0) * (r1 + r2)).mean()
+        
+        with profiler.context("d_loss.forward_pass"):
+            real_logits = self.D(self._prep(real), cond)
+            fake_logits = self.D(self._prep(fake), cond)
+        
+        with profiler.context("d_loss.r1_r2_computation"):
+            r1 = zero_centered_gradient_penalty(real, real_logits)
+            r2 = zero_centered_gradient_penalty(fake, fake_logits)
+        
+        with profiler.context("d_loss.loss_assembly"):
+            rel = real_logits - fake_logits
+            adv = F.softplus(-rel)
+            loss = (adv + (self.gamma / 2.0) * (r1 + r2)).mean()
+        
         return loss, {
             "d_loss": float(loss.detach().cpu()),
             "d_adv": float(adv.mean().detach().cpu()),
@@ -412,59 +430,86 @@ class R3GANTrainer:
             p.requires_grad_(flag)
 
     def _move_images(self, x: Tensor) -> Tensor:
-        x = x.to(self.device, non_blocking=True)
-        if self.device.type == "cuda" and self.cfg.channels_last:
-            x = x.contiguous(memory_format=torch.channels_last)
+        profiler = get_global_profiler()
+        with profiler.context("move_images_to_device"):
+            x = x.to(self.device, non_blocking=True)
+            if self.device.type == "cuda" and self.cfg.channels_last:
+                x = x.contiguous(memory_format=torch.channels_last)
         return x
 
     def _discriminator_step(self, real_images: Tensor, cond: Optional[Tensor]) -> Dict[str, float]:
+        profiler = get_global_profiler()
+        
         self.set_requires_grad(self.D, True)
         self.set_requires_grad(self.G, False)
-        self.d_opt.zero_grad(set_to_none=True)
+        
+        with profiler.context("d_step.zero_grad"):
+            self.d_opt.zero_grad(set_to_none=True)
 
         batch_size = real_images.shape[0]
-        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
+        
+        with profiler.context("d_step.noise_generation"):
+            z = torch.randn(batch_size, self.G.z_dim, device=self.device)
 
-        if self.cfg.use_amp_for_d and self.device.type == "cuda":
-            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
-                d_loss, d_metrics = self.loss.discriminator_loss(z, real_images, cond)
-        else:
-            d_loss, d_metrics = self.loss.discriminator_loss(z, real_images.float(), cond)
+        with profiler.context("d_step.loss_computation"):
+            if self.cfg.use_amp_for_d and self.device.type == "cuda":
+                with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
+                    d_loss, d_metrics = self.loss.discriminator_loss(z, real_images, cond)
+            else:
+                d_loss, d_metrics = self.loss.discriminator_loss(z, real_images.float(), cond)
 
-        d_loss.backward()
-        if self.cfg.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.D.parameters(), self.cfg.grad_clip)
-        self.d_opt.step()
+        with profiler.context("d_step.backward"):
+            d_loss.backward()
+        
+        with profiler.context("d_step.grad_clip"):
+            if self.cfg.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.D.parameters(), self.cfg.grad_clip)
+        
+        with profiler.context("d_step.optimizer_step"):
+            self.d_opt.step()
 
         return d_metrics
 
     def _generator_step(self, real_images: Tensor, cond: Optional[Tensor]) -> Dict[str, float]:
+        profiler = get_global_profiler()
+        
         self.set_requires_grad(self.D, False)
         self.set_requires_grad(self.G, True)
-        self.g_opt.zero_grad(set_to_none=True)
+        
+        with profiler.context("g_step.zero_grad"):
+            self.g_opt.zero_grad(set_to_none=True)
 
         batch_size = real_images.shape[0]
-        z = torch.randn(batch_size, self.G.z_dim, device=self.device)
+        
+        with profiler.context("g_step.noise_generation"):
+            z = torch.randn(batch_size, self.G.z_dim, device=self.device)
+        
         real_for_g = real_images if (self.cfg.use_amp_for_g and self.device.type == "cuda") else real_images.float()
 
-        if self.cfg.use_amp_for_g and self.device.type == "cuda":
-            with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
+        with profiler.context("g_step.forward_and_discriminate"):
+            if self.cfg.use_amp_for_g and self.device.type == "cuda":
+                with torch.autocast(device_type="cuda", dtype=self.cfg.amp_dtype):
+                    fake = self.G(z, cond)
+                    fake_logits = self.D(self.loss._prep(fake), cond)
+                    real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
+                    rel = fake_logits - real_logits
+                    g_adv = F.softplus(-rel).mean()
+            else:
                 fake = self.G(z, cond)
                 fake_logits = self.D(self.loss._prep(fake), cond)
                 real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
                 rel = fake_logits - real_logits
                 g_adv = F.softplus(-rel).mean()
-        else:
-            fake = self.G(z, cond)
-            fake_logits = self.D(self.loss._prep(fake), cond)
-            real_logits = self.D(self.loss._prep(real_for_g.detach()), cond)
-            rel = fake_logits - real_logits
-            g_adv = F.softplus(-rel).mean()
 
-        g_adv.backward()
-        if self.cfg.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.G.parameters(), self.cfg.grad_clip)
-        self.g_opt.step()
+        with profiler.context("g_step.backward"):
+            g_adv.backward()
+        
+        with profiler.context("g_step.grad_clip"):
+            if self.cfg.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.G.parameters(), self.cfg.grad_clip)
+        
+        with profiler.context("g_step.optimizer_step"):
+            self.g_opt.step()
 
         return {
             "g_loss": float(g_adv.detach().cpu()),
@@ -475,16 +520,25 @@ class R3GANTrainer:
         }
 
     def train_step(self, real_images: Tensor, labels: Optional[Tensor] = None) -> Dict[str, float]:
+        profiler = get_global_profiler()
+        
         self.G.train()
         self.D.train()
         real_images = self._move_images(real_images)
         batch_size = real_images.shape[0]
-        cond = prepare_condition(labels, self.num_classes, batch_size, self.device)
+        
+        with profiler.context("prepare_condition"):
+            cond = prepare_condition(labels, self.num_classes, batch_size, self.device)
 
-        d_metrics = self._discriminator_step(real_images, cond)
-        g_metrics = self._generator_step(real_images, cond)
+        with profiler.context("trainer.discriminator_step"):
+            d_metrics = self._discriminator_step(real_images, cond)
+        
+        with profiler.context("trainer.generator_step"):
+            g_metrics = self._generator_step(real_images, cond)
 
-        update_ema(self.G_ema, self.G, beta=self.cfg.ema_beta)
+        with profiler.context("update_ema"):
+            update_ema(self.G_ema, self.G, beta=self.cfg.ema_beta)
+        
         return {**d_metrics, **g_metrics}
 
     @torch.no_grad()

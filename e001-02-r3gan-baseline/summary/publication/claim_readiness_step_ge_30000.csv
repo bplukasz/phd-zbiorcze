@@ -1,0 +1,16 @@
+recipe,n_runs,n_unique_seeds,median_fid,best_fid,median_kid,median_precision,median_recall,claim_status,claim_note
+phase_b_r0_baseline_32,4,1,21.586199999999998,21.1904,0.015366000000000001,0.63725,0.4543,baseline_anchor,Referencja porownawcza.
+phase_e_r8_waved_wavereg_sched_32,1,1,21.9593,21.9593,0.015282,0.641,0.4542,promising_single_seed,"Blisko baseline, ale brak mocy statystycznej (za malo seedow)."
+phase_f_r9_waved_gatewarm_32_seed43,1,1,22.2751,22.2751,0.016471,0.6171,0.466,promising_single_seed,"Blisko baseline, ale brak mocy statystycznej (za malo seedow)."
+phase_e_r9_waved_gatewarm_32,1,1,22.3503,22.3503,0.016375,0.6451,0.4543,promising_single_seed,"Blisko baseline, ale brak mocy statystycznej (za malo seedow)."
+phase_g_r0_baseline_32_seed44,1,1,22.4049,22.4049,0.015921,0.6247,0.4428,promising_single_seed,"Blisko baseline, ale brak mocy statystycznej (za malo seedow)."
+phase_c_r6_fftreg_32,1,1,22.4578,22.4578,0.016654,0.6381,0.4655,promising_single_seed,"Blisko baseline, ale brak mocy statystycznej (za malo seedow)."
+phase_b_r2_waved_32,1,1,22.9342,22.9342,0.016035,0.6222,0.4575,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_b_r1_matched_capacity_32,1,1,22.9752,22.9752,0.017071,0.6252,0.4568,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_e_r7_wavereg_sched_32,1,1,23.1124,23.1124,0.016888,0.6424,0.4578,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_c_r4_waved_fftreg_32,1,1,23.1217,23.1217,0.016742,0.6374,0.4415,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_f_r8_waved_wavereg_sched_32_seed43,1,1,23.1272,23.1272,0.016518,0.6169,0.4587,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_e_r10_waved_wavereg_combo_32,1,1,23.5177,23.5177,0.016746,0.6443,0.4314,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_e_r11_wavereg_fidgate_32,1,1,24.4362,24.4362,0.017643,0.6382,0.4439,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_c_r5_wavereg_32,1,1,24.7034,24.7034,0.019164,0.6336,0.4626,ablation_only,Brak przewagi i/lub za malo seedow.
+phase_c_r3_waved_wavereg_32,1,1,24.8504,24.8504,0.018518,0.6198,0.4494,ablation_only,Brak przewagi i/lub za malo seedow.

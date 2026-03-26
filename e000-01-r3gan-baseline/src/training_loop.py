@@ -19,6 +19,7 @@ from .eta_logging import (
     step_to_kimg,
     update_ema,
 )
+from .profiler import get_global_profiler
 from .gan_metrics import format_metrics
 from .metrics_runtime import update_fid_auc
 from .r3gan_source import R3GANTrainer, parse_batch
@@ -115,6 +116,8 @@ def run_training_loop(
         io.write_line(f"\nResume step ({start_step}) is already above target steps ({cfg.steps}).")
     io.write_line("-" * 60)
 
+    profiler = get_global_profiler()
+    
     for step in range(start_step, cfg.steps + 1):
         t_iter = time.time()
         kimg = step_to_kimg(step, cfg.batch_size)
@@ -122,14 +125,21 @@ def run_training_loop(
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
 
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            data_iter = iter(dataloader)
-            batch = next(data_iter)
+        # Profiluj pobieranie danych
+        with profiler.context("dataloader.fetch"):
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(dataloader)
+                batch = next(data_iter)
 
-        images, labels = parse_batch(batch)
-        metrics = trainer.train_step(images, labels)
+        # Profiluj parsowanie batcha
+        with profiler.context("batch.parse"):
+            images, labels = parse_batch(batch)
+        
+        # Profiluj train_step
+        with profiler.context("trainer.train_step"):
+            metrics = trainer.train_step(images, labels)
 
         iter_time = time.time() - t_iter
         sec_per_iter_ema = update_ema(sec_per_iter_ema, iter_time)
@@ -261,6 +271,9 @@ def run_training_loop(
             }
             io.row_logger(metrics_row)
 
+    # Wydrukuj podsumowanie profilowania
+    io.write_line(profiler.get_summary())
+    
     return {
         "metrics_elapsed_ema": metrics_elapsed_ema,
         "prev_fid_point": prev_fid_point,

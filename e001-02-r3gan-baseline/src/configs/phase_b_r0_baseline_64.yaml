@@ -17,9 +17,12 @@ img_size: 64
 img_resolution: 64
 
 # === MODEL (większy dla 64x64) ===
-z_dim: 256
-base_channels: 96
-channel_max: 768
+# UWAGA: Zoptymalizowano dla szybszego treningu
+# z_dim zmniejszone o połowę (główne wąskie gardło compute GPU)
+# base_channels/channel_max zachowują ~1.25x vs baseline_32 (uczciwe dla 64x64)
+z_dim: 128              # było 256
+base_channels: 64       # było 96 (vs baseline_32=64: wciąż 1.25x gęstsze)
+channel_max: 512        # było 768 (vs baseline_32=512: 1.25x gęstsze)
 blocks_per_stage: 2
 expansion_factor: 2
 group_size: 16
@@ -34,7 +37,7 @@ fft_reg_enabled: false
 
 # === TRAINING ===
 seed: 42
-steps: 200000      # ~200 kimg przy batch=64
+steps: 30000
 batch_size: 64
 lr_g: 2.0e-4
 lr_d: 2.0e-4
@@ -42,19 +45,19 @@ betas: [0.0, 0.99]
 gamma: 10.0
 ema_beta: 0.999
 use_amp_for_g: true
-use_amp_for_d: false
+use_amp_for_d: true
 channels_last: true
 
 # === LOGGING ===
 log_every: 100
 grid_every: 2000
-ckpt_every: 50000
+ckpt_every: 10000
 save_n_samples: 64
 
 # === GAN METRICS (co ~5 kimg przy batch=64 → co 5000 steps) ===
-metrics_every: 5000
-metrics_num_fake: 10000
-metrics_fake_batch_size: 128
+metrics_every: 2500
+metrics_num_fake: 50000
+metrics_fake_batch_size: 256
 metrics_fid_feature: 2048
 metrics_kid_feature: 2048
 metrics_kid_subsets: 100

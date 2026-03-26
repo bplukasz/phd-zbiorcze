@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "exp-20260326-000911-001",
+      "profile": "phase_b_r0_baseline_64",
+      "data_dir": "",
+      "overrides": [],
+      "status": "failed",
+      "tsp_id": 2,
+      "created_at": "2026-03-26T00:09:11",
+      "submitted_at": "2026-03-26T00:12:28",
+      "finished_at": "2026-03-26T00:15:06",
+      "notes": ""
+    },
+    {
+      "id": "exp-20260326-001431-001",
+      "profile": "phase_b_r0_baseline_64",
+      "data_dir": "",
+      "overrides": [],
+      "status": "failed",
+      "tsp_id": 3,
+      "created_at": "2026-03-26T00:14:31",
+      "submitted_at": "2026-03-26T00:15:39",
+      "finished_at": "2026-03-26T00:16:33",
+      "notes": ""
+    },
+    {
+      "id": "exp-20260326-001755-001",
+      "profile": "phase_b_r0_baseline_64",
+      "data_dir": "",
+      "overrides": [],
+      "status": "failed",
+      "tsp_id": 4,
+      "created_at": "2026-03-26T00:17:55",
+      "submitted_at": "2026-03-26T00:18:08",
+      "finished_at": "2026-03-26T00:19:44",
+      "notes": ""
+    },
+    {
+      "id": "exp-20260326-001915-001",
+      "profile": "phase_b_r0_baseline_64",
+      "data_dir": "",
+      "overrides": [],
+      "status": "running",
+      "tsp_id": 5,
+      "created_at": "2026-03-26T00:19:15",
+      "submitted_at": "2026-03-26T00:19:19",
+      "finished_at": null,
+      "notes": ""
+    }
+  ]
+}

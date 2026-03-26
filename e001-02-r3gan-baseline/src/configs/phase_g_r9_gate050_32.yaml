@@ -1,21 +1,12 @@
-# =========================================================
-# Eksperyment: Faza B / R0 — Baseline
-# Rozdzielczość: 32x32 (CIFAR-10)
-# Opis: Czysty baseline R3GAN bez żadnych rozszerzeń.
-#        Punkt zerowy do wszystkich porównań w Fazie B i C.
-# Seed: 42 (single seed — Faza B)
-# Budżet: ~500 kimg (steps=500000, batch=128 → ~500M obrazów)
-#          Dla szybkiego testu ustaw steps=50000 (~50 kimg)
-# =========================================================
-name: "phase_b_r0_baseline_32"
+name: "phase_g_r9_gate050_32"
 
-# === DATASET ===
+# Dataset
 dataset_name: "cifar10"
 img_channels: 3
 img_size: 32
 img_resolution: 32
 
-# === MODEL ===
+# Model
 z_dim: 128
 base_channels: 64
 channel_max: 512
@@ -23,17 +14,30 @@ blocks_per_stage: 2
 expansion_factor: 2
 group_size: 16
 
-# === DISCRIMINATOR: baseline (brak gałęzi pomocniczych) ===
-wavelet_enabled: false
+# Wavelet discriminator branch
+wavelet_enabled: true
 matched_capacity_enabled: false
+wavelet_type: "haar"
+wavelet_level: 1
+wavelet_hf_only: true
+wavelet_fuse_after_stage: 0
+wavelet_branch_mid_scale: 0.5
+wavelet_init_gate: 0.0
 
-# === GENERATOR: brak regularizera ===
+# Gate warmup (single change vs r9: higher final gate)
+aux_branch_gate_warmup_enabled: true
+aux_branch_gate_warmup_start_step: 3000
+aux_branch_gate_warmup_end_step: 12000
+aux_branch_gate_warmup_start_value: 0.0
+aux_branch_gate_warmup_end_value: 0.5
+
+# No frequency regularizers
 wave_reg_enabled: false
 fft_reg_enabled: false
 
-# === TRAINING ===
+# Training
 seed: 42
-steps: 30000      # ~100 kimg przy batch=128 → ok na szybki Faza B
+steps: 30000
 batch_size: 128
 lr_g: 2.0e-4
 lr_d: 2.0e-4
@@ -44,13 +48,13 @@ use_amp_for_g: true
 use_amp_for_d: true
 channels_last: true
 
-# === LOGGING ===
+# Logging
 log_every: 100
 grid_every: 2000
 ckpt_every: 10000
 save_n_samples: 64
 
-# === GAN METRICS (co 5 kimg przy batch=128 → co 5000 steps) ===
+# Metrics
 metrics_every: 2500
 metrics_num_fake: 50000
 metrics_fake_batch_size: 256
@@ -65,3 +69,4 @@ metrics_lpips_num_pairs: 2048
 metrics_lpips_pool_size: 4096
 metrics_amp_dtype: "bf16"
 metrics_spectral: true
+
